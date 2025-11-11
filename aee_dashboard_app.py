@@ -1,7 +1,7 @@
 # aee_dashboard_app.py
 # Jal Jeevan Mission — Assistant Executive Engineer (AEE) Dashboard
-# Aggregated overview across 14 Section Officers (SOs)
-# Shows functionality summary, update summary, top & worst SOs, AEE info, and export options
+# Adds 7 / 15 / 30-day filter for performance rankings
+# Shows top & worst performing SOs, functionality summary, updates summary, and export options
 
 import streamlit as st
 import pandas as pd
@@ -45,22 +45,19 @@ def generate_aee_demo_data(num_sos=14, schemes_per_so=20):
             scheme_type = "Functional" if random.random() > 0.25 else "Non-Functional"
             all_schemes.append({"SO": so, "Scheme": f"{so.split()[0]}_Scheme_{i+1}", "Functionality": scheme_type})
 
-        # compute score (half weight for updates, half for water)
-        score = round((updated_today / func_count) * 0.5 + (total_water / 1500) * 0.5, 3)
-
         data.append({
             "SO Name": so,
             "Functional Schemes": func_count,
             "Non-Functional Schemes": non_func_count,
             "Total Schemes": func_count + non_func_count,
             "Updated Today": updated_today,
-            "Total Water (m³)": total_water,
-            "Score": score
+            "Total Water (m³)": total_water
         })
 
     return pd.DataFrame(data), pd.DataFrame(all_schemes)
 
-aee_metrics, scheme_df = generate_aee_demo_data()
+# Generate static base data (for 1 day)
+aee_base_metrics, scheme_df = generate_aee_demo_data()
 
 # --------------------------- Overview Pie Charts ---------------------------
 col1, col2 = st.columns(2)
@@ -78,8 +75,8 @@ with col1:
 
 with col2:
     st.markdown("### SO Updates (Today)")
-    updated_total = aee_metrics["Updated Today"].sum()
-    total_possible = aee_metrics["Functional Schemes"].sum()
+    updated_total = aee_base_metrics["Updated Today"].sum()
+    total_possible = aee_base_metrics["Functional Schemes"].sum()
     df_upd = pd.DataFrame(
         {"status": ["Updated", "Not Updated"], "count": [updated_total, total_possible - updated_total]}
     )
@@ -95,14 +92,23 @@ with col2:
 
 st.markdown("---")
 
-# --------------------------- Performance Rankings ---------------------------
+# --------------------------- Day Filter ---------------------------
 st.subheader("🏅 Section Officer Performance Summary (Across Subdivision)")
+days_filter = st.selectbox("Select Duration", [7, 15, 30], index=0)
+st.markdown(f"Showing performance for **last {days_filter} days**")
 
-# sort and rank
+# Adjust metrics proportionally to number of days selected
+aee_metrics = aee_base_metrics.copy()
+aee_metrics["Updated Days"] = aee_metrics["Updated Today"] * (days_filter / 7)
+aee_metrics["Total Water (m³)"] = aee_metrics["Total Water (m³)"] * (days_filter / 7)
+
+# Normalize and compute score
+max_water = aee_metrics["Total Water (m³)"].max()
+aee_metrics["Score"] = 0.5 * (aee_metrics["Updated Days"] / days_filter) + 0.5 * (aee_metrics["Total Water (m³)"] / max_water)
 aee_metrics = aee_metrics.sort_values(by="Score", ascending=False).reset_index(drop=True)
 aee_metrics.insert(0, "Rank", range(1, len(aee_metrics) + 1))
 
-# Top 7 and Worst 7
+# --------------------------- Top & Worst Tables ---------------------------
 top_table = aee_metrics.head(7).copy()
 worst_table = aee_metrics.tail(7).sort_values(by="Score", ascending=True).reset_index(drop=True)
 
@@ -111,8 +117,8 @@ with col_t:
     st.markdown("### 🟢 Top 7 Performing SOs")
     st.dataframe(
         top_table.style.format({"Total Water (m³)": "{:.2f}", "Score": "{:.3f}"})
-        .background_gradient(subset=["Functional Schemes", "Updated Today", "Score"], cmap="Greens")
-        .set_table_styles([{"selector": "th", "props": [("font-weight", "600")]}]),
+        .background_gradient(subset=["Functional Schemes", "Updated Days", "Score"], cmap="Greens")
+        .set_table_styles([{"selector": "th", "props": [("font-weight", "600"), ("border", "1px solid #ccc")]}]),
         use_container_width=True,
         height=380,
     )
@@ -122,8 +128,8 @@ with col_w:
     st.markdown("### 🔴 Worst 7 Performing SOs")
     st.dataframe(
         worst_table.style.format({"Total Water (m³)": "{:.2f}", "Score": "{:.3f}"})
-        .background_gradient(subset=["Functional Schemes", "Updated Today", "Score"], cmap="Reds_r")
-        .set_table_styles([{"selector": "th", "props": [("font-weight", "600")]}]),
+        .background_gradient(subset=["Functional Schemes", "Updated Days", "Score"], cmap="Reds_r")
+        .set_table_styles([{"selector": "th", "props": [("font-weight", "600"), ("border", "1px solid #ccc")]}]),
         use_container_width=True,
         height=380,
     )
@@ -136,7 +142,7 @@ st.subheader("📤 Export Summary")
 st.download_button(
     "📁 Download All AEE Metrics CSV",
     aee_metrics.to_csv(index=False).encode("utf-8"),
-    file_name="aee_metrics_full.csv",
+    file_name=f"aee_metrics_{days_filter}days.csv",
 )
 st.download_button(
     "📁 Download Scheme Functionality CSV",
@@ -144,4 +150,4 @@ st.download_button(
     file_name="aee_scheme_functionality.csv",
 )
 
-st.success(f"✅ Dashboard ready for {AEE_NAME} — {SUBDIVISION}. Data auto-generated successfully.")
+st.success(f"✅ Dashboard ready for {AEE_NAME} — {SUBDIVISION}. Data auto-generated successfully for last {days_filter} days.")

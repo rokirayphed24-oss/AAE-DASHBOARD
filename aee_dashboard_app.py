@@ -1,180 +1,117 @@
 # aee_dashboard_app.py
-# AEE Dashboard — simple & professional
-# - Top 7 (green) and Worst 7 (red) tables (styled)
-# - SO names below tables as clickable buttons
-# - Clicking a name shows a non-interactive (matplotlib) chart and summary (like SO dashboard)
-# - 7/15/30 day filter updates tables & charts
+# Jal Jeevan Mission — Assistant Executive Engineer (AEE) Dashboard
+# Aggregated overview across multiple Section Officers (SOs)
+# Shows functionality summary, updates summary, and per-SO performance list
 
 import streamlit as st
 import pandas as pd
 import random
 import datetime
-import matplotlib.pyplot as plt
+import plotly.express as px
 
-# --------------------------- Page setup ---------------------------
+# --------------------------- Page Setup ---------------------------
 st.set_page_config(page_title="JJM AEE Dashboard", layout="wide")
-AEE_NAME = "Er. ROKI RAY"
-SUBDIVISION = "Guwahati Subdivision"
-
 st.title("💧 Jal Jeevan Mission — AEE Dashboard")
-st.markdown(f"**Subdivision:** {SUBDIVISION}  •  **AEE:** {AEE_NAME}")
-st.markdown(f"**DATE:** {datetime.date.today().strftime('%A, %d %B %Y').upper()}")
+st.markdown("Overview of all Section Officers (SOs) under your division.")
 st.markdown("---")
 
-# --------------------------- Demo data generator ---------------------------
-def generate_aee_demo_data(num_sos=14, schemes_per_so=20):
-    sos = [
-        "Roki Ray", "Sanjay Das", "Anup Bora", "Ranjit Kalita", "Bikash Deka", "Manoj Das", "Dipankar Nath",
-        "Himangshu Deka", "Kamal Choudhury", "Rituraj Das", "Debojit Gogoi", "Utpal Saikia", "Pritam Bora", "Amit Baruah"
-    ][:num_sos]
+# --------------------------- Generate Aggregated Demo Data ---------------------------
+def generate_aee_demo_data(num_sos=5, schemes_per_so=15):
+    """Simulate data aggregated from multiple SO dashboards."""
+    sos = ["Roki Ray", "Sanjay Das", "Anup Bora", "Ranjit Kalita", "Bikash Deka", "Manoj Das", "Dipankar Nath"]
+    sos = sos[:num_sos]
 
-    records = []
-    scheme_rows = []
-    # create per-SO aggregated numbers (base for 7-day window)
+    data = []
+    all_schemes = []
+    today = datetime.date.today()
+
     for so in sos:
-        func_count = random.randint(10, schemes_per_so)
+        func_count = random.randint(8, schemes_per_so)
         non_func_count = schemes_per_so - func_count
-        updated_today = random.randint(int(func_count * 0.5), func_count)
-        total_water_7d = round(random.uniform(300, 1500), 2)  # interpret as 7-day baseline
-        records.append({
+        total_func = func_count + non_func_count
+        updated_today = random.randint(int(func_count * 0.6), func_count)
+
+        schemes = [f"{so.split()[0]}_Scheme_{i}" for i in range(total_func)]
+        for s in schemes:
+            scheme_type = "Functional" if random.random() > 0.25 else "Non-Functional"
+            all_schemes.append({"SO": so, "Scheme": s, "Functionality": scheme_type})
+
+        total_water = round(random.uniform(200, 1200), 2)
+        data.append({
             "SO Name": so,
             "Functional Schemes": func_count,
             "Non-Functional Schemes": non_func_count,
-            "Total Schemes": func_count + non_func_count,
-            "Updated Today (7d-baseline)": updated_today,
-            "Total Water (7d-baseline m³)": total_water_7d
+            "Total Schemes": total_func,
+            "Updated Today": updated_today,
+            "Total Water (m³)": total_water,
+            "Score": round((updated_today/func_count)*0.5 + (total_water/1200)*0.5, 3)
         })
-        for i in range(schemes_per_so):
-            scheme_rows.append({"SO": so, "Scheme": f"{so.split()[0]}_Scheme_{i+1}",
-                                "Functionality": "Functional" if random.random() > 0.25 else "Non-Functional"})
-    return pd.DataFrame(records), pd.DataFrame(scheme_rows)
 
-base_metrics, scheme_df = generate_aee_demo_data()
+    return pd.DataFrame(data), pd.DataFrame(all_schemes)
 
-# --------------------------- Overview pies ---------------------------
+aee_metrics, scheme_df = generate_aee_demo_data()
+
+# --------------------------- Overview Pie Charts ---------------------------
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("Scheme Functionality")
+    st.markdown("### Scheme Functionality Overview")
     func_counts = scheme_df["Functionality"].value_counts()
-    # simple textual fallback if no plotly — show counts as dataframe
-    st.write(func_counts.to_frame(name="Count"))
-with col2:
-    st.subheader("SO Updates (today baseline)")
-    total_updated = base_metrics["Updated Today (7d-baseline)"].sum()
-    total_func = base_metrics["Functional Schemes"].sum()
-    st.write(pd.DataFrame({
-        "status": ["Updated", "Absent"],
-        "count": [int(total_updated), int(max(total_func - total_updated, 0))]
-    }))
-
-st.markdown("---")
-
-# --------------------------- Duration selector ---------------------------
-st.subheader("Section Officer Performance (AEE view)")
-days = st.selectbox("Select window", [7, 15, 30], index=0, format_func=lambda x: f"{x} days")
-st.markdown(f"Showing results for last **{days} days**")
-st.markdown("")
-
-# --------------------------- Compute metrics for selected window ---------------------------
-def compute_period_metrics(base_df: pd.DataFrame, days: int):
-    # base_df has 7-day baseline numbers; scale to chosen days
-    df = base_df.copy()
-    # scale Updated baseline proportionally (assume Updated Today baseline for 7-day window)
-    df["Days Updated (last N)"] = (df["Updated Today (7d-baseline)"] * (days / 7)).round().astype(int)
-    df["Total Water (m³)"] = (df["Total Water (7d-baseline m³)"] * (days / 7)).round(2)
-    # score: 50% frequency (days updated / days) + 50% quantity scaled by max
-    max_water = df["Total Water (m³)"].max() if not df["Total Water (m³)"].empty else 1.0
-    df["Score"] = (0.5 * (df["Days Updated (last N)"] / days)) + (0.5 * (df["Total Water (m³)"] / max_water))
-    df = df.sort_values(by=["Score", "Total Water (m³)"], ascending=False).reset_index(drop=True)
-    df.insert(0, "Rank", range(1, len(df) + 1))
-    return df
-
-metrics = compute_period_metrics(base_metrics, days)
-
-# --------------------------- Top & Worst tables (styled like SO table) ---------------------------
-top7 = metrics.head(7).copy()
-worst7 = metrics.tail(7).sort_values(by="Score", ascending=True).reset_index(drop=True)
-
-st.markdown("#### Top 7 Performing SOs")
-st.dataframe(
-    top7.style.format({
-        "Total Water (m³)": "{:.2f}",
-        "Score": "{:.3f}"
-    }).background_gradient(subset=["Days Updated (last N)", "Total Water (m³)", "Score"], cmap="Greens")
-, use_container_width=True, height=300)
-
-st.markdown("#### Worst 7 Performing SOs")
-st.dataframe(
-    worst7.style.format({
-        "Total Water (m³)": "{:.2f}",
-        "Score": "{:.3f}"
-    }).background_gradient(subset=["Days Updated (last N)", "Total Water (m³)", "Score"], cmap="Reds_r")
-, use_container_width=True, height=300)
-
-st.markdown("---")
-
-# --------------------------- Clickable SO names below tables ---------------------------
-st.subheader("Open SO Dashboard (click a name)")
-
-left_col, right_col = st.columns(2)
-
-with left_col:
-    st.markdown("**Top 7 — click to view**")
-    for i, r in top7.iterrows():
-        name = r["SO Name"]
-        if st.button(f"{r['Rank']}. {name}", key=f"topbtn_{name}_{days}"):
-            st.session_state["aee_selected_so"] = name
-
-with right_col:
-    st.markdown("**Worst 7 — click to view**")
-    for i, r in worst7.iterrows():
-        name = r["SO Name"]
-        if st.button(f"{r['Rank']}. {name}", key=f"worstbtn_{name}_{days}"):
-            st.session_state["aee_selected_so"] = name
-
-# --------------------------- Show SO dashboard-like view when selected ---------------------------
-if "aee_selected_so" in st.session_state and st.session_state["aee_selected_so"]:
-    so_name = st.session_state["aee_selected_so"]
-    st.markdown("---")
-    st.subheader(f"Section Officer Dashboard — {so_name}")
-    # find metrics row
-    row = metrics[metrics["SO Name"] == so_name].iloc[0]
-
-    # summary (visible card)
-    st.markdown(
-        f"""
-        <div style="background:#ffffff;border:1px solid #e6e6e6;padding:12px;border-radius:8px;">
-          <b>SO:</b> {so_name} &nbsp;&nbsp; | &nbsp;&nbsp;
-          <b>Days Updated:</b> {int(row['Days Updated (last N)'])}/{days} &nbsp;&nbsp; | &nbsp;&nbsp;
-          <b>Total Water:</b> {row['Total Water (m³)']:.2f} m³ &nbsp;&nbsp; | &nbsp;&nbsp;
-          <b>Score:</b> {row['Score']:.3f}
-        </div>
-        """,
-        unsafe_allow_html=True
+    fig1 = px.pie(
+        names=func_counts.index,
+        values=func_counts.values,
+        color=func_counts.index,
+        color_discrete_map={"Functional": "#4CAF50", "Non-Functional": "#F44336"},
     )
+    fig1.update_traces(textinfo="percent+label")
+    st.plotly_chart(fig1, use_container_width=True, height=300)
 
-    # simulate daily data for this SO (deterministic by seed)
-    random.seed(hash(so_name) % 9999)
-    dates = [(datetime.date.today() - datetime.timedelta(days=i)).isoformat() for i in reversed(range(days))]
-    vals = [round(random.uniform(30, 100), 2) for _ in range(days)]
-    daily_df = pd.DataFrame({"Date": dates, "Water (m³)": vals})
-
-    # non-interactive matplotlib bar chart (compact)
-    fig, ax = plt.subplots(figsize=(8, 2.8))
-    ax.bar(daily_df["Date"], daily_df["Water (m³)"])
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Water (m³)")
-    ax.set_title(f"{so_name} — Daily Water Supplied (Last {days} days)")
-    ax.tick_params(axis='x', rotation=45, labelsize=8)
-    plt.tight_layout()
-    st.pyplot(fig)
-
-    # Close button
-    if st.button("Close SO View", key=f"close_so_{so_name}_{days}"):
-        st.session_state["aee_selected_so"] = None
+with col2:
+    st.markdown("### SO Updates (Today)")
+    updated_total = aee_metrics["Updated Today"].sum()
+    total_possible = aee_metrics["Functional Schemes"].sum()
+    df_upd = pd.DataFrame(
+        {"status": ["Updated", "Not Updated"], "count": [updated_total, total_possible - updated_total]}
+    )
+    fig2 = px.pie(
+        df_upd,
+        names="status",
+        values="count",
+        color="status",
+        color_discrete_map={"Updated": "#4CAF50", "Not Updated": "#F44336"},
+    )
+    fig2.update_traces(textinfo="percent+label")
+    st.plotly_chart(fig2, use_container_width=True, height=300)
 
 st.markdown("---")
-st.subheader("Export")
-st.download_button("Download AEE metrics (CSV)", metrics.to_csv(index=False).encode("utf-8"), file_name=f"aee_metrics_{days}d.csv")
-st.download_button("Download Scheme list (CSV)", scheme_df.to_csv(index=False).encode("utf-8"), file_name="aee_schemes.csv")
-st.success("AEE dashboard ready.")
+
+# --------------------------- SO Performance Table ---------------------------
+st.subheader("📊 Section Officer (SO) Performance Summary")
+
+aee_metrics = aee_metrics.sort_values(by="Score", ascending=False).reset_index(drop=True)
+aee_metrics.insert(0, "Rank", range(1, len(aee_metrics) + 1))
+
+# Styled table
+st.dataframe(
+    aee_metrics.style.format({"Total Water (m³)": "{:.2f}", "Score": "{:.3f}"})
+    .background_gradient(subset=["Score"], cmap="Greens"),
+    use_container_width=True,
+    height=400,
+)
+
+st.info("💡 Tap on an SO Name (coming soon) to open their full dashboard view.")
+
+# --------------------------- Export ---------------------------
+st.markdown("---")
+st.subheader("📤 Export Summary")
+st.download_button(
+    "Download AEE Metrics CSV",
+    aee_metrics.to_csv(index=False).encode("utf-8"),
+    file_name="aee_dashboard_metrics.csv",
+)
+st.download_button(
+    "Download Scheme Functionality CSV",
+    scheme_df.to_csv(index=False).encode("utf-8"),
+    file_name="scheme_functionality.csv",
+)
+
+st.success("✅ Demo data for AEE Dashboard generated successfully.")

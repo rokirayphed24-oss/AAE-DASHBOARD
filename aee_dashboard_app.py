@@ -1,8 +1,7 @@
 # aee_dashboard_app.py
 # Jal Jeevan Mission — Assistant Executive Engineer (AEE) Dashboard
-# - Adds 7/15/30 day filter
-# - Clickable SO names in Top/Worst tables to view performance chart
-# - Retains color formatting and layout consistency
+# Adds: Inline expandable SO performance chart with summary
+# Retains: 7/15/30 day filter, green/red color tables, AEE info, and mobile layout
 
 import streamlit as st
 import pandas as pd
@@ -33,13 +32,12 @@ def generate_aee_demo_data(num_sos=14, schemes_per_so=20):
 
     data = []
     all_schemes = []
-    today = datetime.date.today()
-
     for so in sos:
         func_count = random.randint(10, schemes_per_so)
         non_func_count = schemes_per_so - func_count
         updated_today = random.randint(int(func_count * 0.5), func_count)
         total_water = round(random.uniform(300, 1500), 2)
+        score = round((updated_today / func_count) * 0.5 + (total_water / 1500) * 0.5, 3)
 
         for i in range(schemes_per_so):
             scheme_type = "Functional" if random.random() > 0.25 else "Non-Functional"
@@ -51,25 +49,22 @@ def generate_aee_demo_data(num_sos=14, schemes_per_so=20):
             "Non-Functional Schemes": non_func_count,
             "Total Schemes": func_count + non_func_count,
             "Updated Today": updated_today,
-            "Total Water (m³)": total_water
+            "Total Water (m³)": total_water,
+            "Score": score
         })
-
     return pd.DataFrame(data), pd.DataFrame(all_schemes)
 
-# --------------------------- Cached base data ---------------------------
+# Generate base data
 aee_base_metrics, scheme_df = generate_aee_demo_data()
 
-# --------------------------- Overview Pie Charts ---------------------------
+# --------------------------- Overview Charts ---------------------------
 col1, col2 = st.columns(2)
 with col1:
     st.markdown("### Scheme Functionality Overview")
     func_counts = scheme_df["Functionality"].value_counts()
-    fig1 = px.pie(
-        names=func_counts.index,
-        values=func_counts.values,
-        color=func_counts.index,
-        color_discrete_map={"Functional": "#4CAF50", "Non-Functional": "#F44336"},
-    )
+    fig1 = px.pie(names=func_counts.index, values=func_counts.values,
+                  color=func_counts.index,
+                  color_discrete_map={"Functional": "#4CAF50", "Non-Functional": "#F44336"})
     fig1.update_traces(textinfo="percent+label")
     st.plotly_chart(fig1, use_container_width=True, height=300)
 
@@ -77,16 +72,11 @@ with col2:
     st.markdown("### SO Updates (Today)")
     updated_total = aee_base_metrics["Updated Today"].sum()
     total_possible = aee_base_metrics["Functional Schemes"].sum()
-    df_upd = pd.DataFrame(
-        {"status": ["Updated", "Not Updated"], "count": [updated_total, total_possible - updated_total]}
-    )
-    fig2 = px.pie(
-        df_upd,
-        names="status",
-        values="count",
-        color="status",
-        color_discrete_map={"Updated": "#4CAF50", "Not Updated": "#F44336"},
-    )
+    df_upd = pd.DataFrame({"status": ["Updated", "Not Updated"],
+                           "count": [updated_total, total_possible - updated_total]})
+    fig2 = px.pie(df_upd, names="status", values="count",
+                  color="status",
+                  color_discrete_map={"Updated": "#4CAF50", "Not Updated": "#F44336"})
     fig2.update_traces(textinfo="percent+label")
     st.plotly_chart(fig2, use_container_width=True, height=300)
 
@@ -97,77 +87,78 @@ st.subheader("🏅 Section Officer Performance Summary (Across Subdivision)")
 days_filter = st.selectbox("Select Duration", [7, 15, 30], index=0)
 st.markdown(f"Showing performance for **last {days_filter} days**")
 
-# --------------------------- Data Transformation ---------------------------
+# --------------------------- Transform Data ---------------------------
 aee_metrics = aee_base_metrics.copy()
 aee_metrics["Updated Days"] = aee_metrics["Updated Today"] * (days_filter / 7)
 aee_metrics["Total Water (m³)"] = aee_metrics["Total Water (m³)"] * (days_filter / 7)
 
 max_water = aee_metrics["Total Water (m³)"].max()
-aee_metrics["Score"] = 0.5 * (aee_metrics["Updated Days"] / days_filter) + 0.5 * (aee_metrics["Total Water (m³)"] / max_water)
+aee_metrics["Score"] = 0.5 * (aee_metrics["Updated Days"] / days_filter) + \
+                       0.5 * (aee_metrics["Total Water (m³)"] / max_water)
 aee_metrics = aee_metrics.sort_values(by="Score", ascending=False).reset_index(drop=True)
 aee_metrics.insert(0, "Rank", range(1, len(aee_metrics) + 1))
 
-# --------------------------- Top & Worst SO Tables ---------------------------
+# --------------------------- Tables ---------------------------
 top_table = aee_metrics.head(7).copy()
 worst_table = aee_metrics.tail(7).sort_values(by="Score", ascending=True).reset_index(drop=True)
-
-st.session_state.setdefault("selected_so", None)
+st.session_state.setdefault("expanded_so", None)
 
 col_t, col_w = st.columns(2)
+
+# Helper: show inline chart and summary
+def show_inline_chart(so_name):
+    random.seed(hash(so_name) % 10000)
+    dates = [(datetime.date.today() - datetime.timedelta(days=i)).isoformat() for i in reversed(range(days_filter))]
+    water_values = [round(random.uniform(30, 100), 2) for _ in range(days_filter)]
+    df_chart = pd.DataFrame({"Date": dates, "Water Supplied (m³)": water_values})
+    total_water = sum(water_values)
+    days_active = sum(1 for v in water_values if v > 0)
+    avg_score = round((days_active / days_filter) * 0.5 + (total_water / (days_filter * 100)) * 0.5, 3)
+
+    st.markdown(f"**Days Updated:** {days_active}/{days_filter} | **Total Water:** {total_water:.2f} m³ | **Score:** {avg_score:.3f}")
+    fig = px.area(df_chart, x="Date", y="Water Supplied (m³)",
+                  title=f"{so_name} — Water Supplied (Last {days_filter} Days)",
+                  markers=False)
+    fig.update_traces(line_color="#2196F3", fillcolor="rgba(33,150,243,0.25)")
+    fig.update_layout(showlegend=False, height=280, margin=dict(l=30, r=30, t=40, b=20))
+    st.plotly_chart(fig, use_container_width=True)
+
+# --------------------------- Top Performing SOs ---------------------------
 with col_t:
     st.markdown("### 🟢 Top 7 Performing SOs")
     for _, row in top_table.iterrows():
-        so_name = row["SO Name"]
-        if st.button(so_name, key=f"top_{so_name}"):
-            st.session_state["selected_so"] = so_name
-        st.dataframe(
-            pd.DataFrame([row]).style.format({"Total Water (m³)": "{:.2f}", "Score": "{:.3f}"})
-            .background_gradient(subset=["Functional Schemes", "Updated Days", "Score"], cmap="Greens")
-            .set_table_styles([{"selector": "th", "props": [("font-weight", "600"), ("border", "1px solid #ccc")]}]),
-            use_container_width=True,
-            height=70,
-        )
+        so = row["SO Name"]
+        color_style = row["Score"]
+        bg_style = "rgba(76, 175, 80, 0.15)" if st.session_state["expanded_so"] == so else "rgba(255,255,255,0.9)"
+        with st.container():
+            if st.button(f"{row['Rank']}. {so}", key=f"top_{so}"):
+                st.session_state["expanded_so"] = so if st.session_state["expanded_so"] != so else None
+            st.markdown(
+                f"<div style='background-color:{bg_style};padding:8px;border-radius:8px;margin-top:-10px;border:1px solid #C8E6C9;'>"
+                f"<b>Functional:</b> {row['Functional Schemes']} | <b>Updated Days:</b> {row['Updated Days']:.0f} | "
+                f"<b>Total Water:</b> {row['Total Water (m³)']:.2f} | <b>Score:</b> {row['Score']:.3f}</div>",
+                unsafe_allow_html=True,
+            )
+            if st.session_state["expanded_so"] == so:
+                show_inline_chart(so)
 
+# --------------------------- Worst Performing SOs ---------------------------
 with col_w:
     st.markdown("### 🔴 Worst 7 Performing SOs")
     for _, row in worst_table.iterrows():
-        so_name = row["SO Name"]
-        if st.button(so_name, key=f"worst_{so_name}"):
-            st.session_state["selected_so"] = so_name
-        st.dataframe(
-            pd.DataFrame([row]).style.format({"Total Water (m³)": "{:.2f}", "Score": "{:.3f}"})
-            .background_gradient(subset=["Functional Schemes", "Updated Days", "Score"], cmap="Reds_r")
-            .set_table_styles([{"selector": "th", "props": [("font-weight", "600"), ("border", "1px solid #ccc")]}]),
-            use_container_width=True,
-            height=70,
-        )
-
-st.markdown("---")
-
-# --------------------------- SO Performance Chart ---------------------------
-if st.session_state.get("selected_so"):
-    so_selected = st.session_state["selected_so"]
-    st.subheader(f"📈 {so_selected} — {days_filter}-Day Performance Trend")
-
-    # Simulated water supply trend for the selected SO
-    random.seed(hash(so_selected) % 10000)
-    dates = [(datetime.date.today() - datetime.timedelta(days=i)).isoformat() for i in reversed(range(days_filter))]
-    water_values = [round(random.uniform(30, 100), 2) for _ in range(days_filter)]
-
-    df_chart = pd.DataFrame({"Date": dates, "Water Supplied (m³)": water_values})
-    fig = px.area(
-        df_chart,
-        x="Date",
-        y="Water Supplied (m³)",
-        title=f"{so_selected} — Daily Water Supplied (Last {days_filter} Days)",
-        markers=False,
-    )
-    fig.update_traces(line_color="#2196F3", fillcolor="rgba(33,150,243,0.3)")
-    fig.update_layout(showlegend=False, height=380, margin=dict(l=30, r=30, t=40, b=30))
-    st.plotly_chart(fig, use_container_width=True)
-
-    if st.button("Close Chart"):
-        st.session_state["selected_so"] = None
+        so = row["SO Name"]
+        bg_style = "rgba(244, 67, 54, 0.15)" if st.session_state["expanded_so"] == so else "rgba(255,255,255,0.9)"
+        with st.container():
+            if st.button(f"{row['Rank']}. {so}", key=f"worst_{so}"):
+                st.session_state["expanded_so"] = so if st.session_state["expanded_so"] != so else None
+            st.markdown(
+                f"<div style='background-color:{bg_style};padding:8px;border-radius:8px;margin-top:-10px;border:1px solid #FFCDD2;'>"
+                f"<b>Functional:</b> {row['Functional Schemes']} | <b>Updated Days:</b> {row['Updated Days']:.0f} | "
+                f"<b>Total Water:</b> {row['Total Water (m³)']:.2f} | <b>Score:</b> {row['Score']:.3f}</div>",
+                unsafe_allow_html=True,
+            )
+            if st.session_state["expanded_so"] == so:
+                show_inline_chart(so)
 
 st.markdown("---")
 

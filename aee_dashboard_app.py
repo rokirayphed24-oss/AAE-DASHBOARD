@@ -1,7 +1,5 @@
 # aee_dashboard_app.py
-# Jal Jeevan Mission — Assistant Executive Engineer (AEE) Dashboard
-# Adds: Inline expandable SO performance chart with summary
-# Retains: 7/15/30 day filter, green/red color tables, AEE info, and mobile layout
+# AEE Dashboard — Fixed inline click issue + improved visibility for SO chart sections
 
 import streamlit as st
 import pandas as pd
@@ -98,15 +96,13 @@ aee_metrics["Score"] = 0.5 * (aee_metrics["Updated Days"] / days_filter) + \
 aee_metrics = aee_metrics.sort_values(by="Score", ascending=False).reset_index(drop=True)
 aee_metrics.insert(0, "Rank", range(1, len(aee_metrics) + 1))
 
-# --------------------------- Tables ---------------------------
-top_table = aee_metrics.head(7).copy()
-worst_table = aee_metrics.tail(7).sort_values(by="Score", ascending=True).reset_index(drop=True)
-st.session_state.setdefault("expanded_so", None)
+# --------------------------- Session Key ---------------------------
+if "expanded_so" not in st.session_state:
+    st.session_state["expanded_so"] = None
 
-col_t, col_w = st.columns(2)
-
-# Helper: show inline chart and summary
-def show_inline_chart(so_name):
+# --------------------------- Helper: Show Inline Chart ---------------------------
+def show_inline_chart(so_name, border_color):
+    """Display a static, visible chart and summary inside a styled box."""
     random.seed(hash(so_name) % 10000)
     dates = [(datetime.date.today() - datetime.timedelta(days=i)).isoformat() for i in reversed(range(days_filter))]
     water_values = [round(random.uniform(30, 100), 2) for _ in range(days_filter)]
@@ -115,50 +111,73 @@ def show_inline_chart(so_name):
     days_active = sum(1 for v in water_values if v > 0)
     avg_score = round((days_active / days_filter) * 0.5 + (total_water / (days_filter * 100)) * 0.5, 3)
 
-    st.markdown(f"**Days Updated:** {days_active}/{days_filter} | **Total Water:** {total_water:.2f} m³ | **Score:** {avg_score:.3f}")
+    st.markdown(
+        f"""
+        <div style="background-color:white; border:2px solid {border_color};
+                    border-radius:10px; padding:10px; margin-top:5px;">
+            <b>Days Updated:</b> {days_active}/{days_filter} |
+            <b>Total Water:</b> {total_water:.2f} m³ |
+            <b>Score:</b> {avg_score:.3f}
+        </div>
+        """, unsafe_allow_html=True
+    )
+
     fig = px.area(df_chart, x="Date", y="Water Supplied (m³)",
                   title=f"{so_name} — Water Supplied (Last {days_filter} Days)",
                   markers=False)
-    fig.update_traces(line_color="#2196F3", fillcolor="rgba(33,150,243,0.25)")
-    fig.update_layout(showlegend=False, height=280, margin=dict(l=30, r=30, t=40, b=20))
+    fig.update_traces(line_color=border_color, fillcolor=f"rgba(33,150,243,0.2)")
+    fig.update_layout(showlegend=False, height=250,
+                      margin=dict(l=30, r=30, t=40, b=20),
+                      paper_bgcolor="white", plot_bgcolor="white")
     st.plotly_chart(fig, use_container_width=True)
+
+# --------------------------- Tables ---------------------------
+top_table = aee_metrics.head(7).copy()
+worst_table = aee_metrics.tail(7).sort_values(by="Score", ascending=True).reset_index(drop=True)
+
+col_t, col_w = st.columns(2)
 
 # --------------------------- Top Performing SOs ---------------------------
 with col_t:
     st.markdown("### 🟢 Top 7 Performing SOs")
     for _, row in top_table.iterrows():
         so = row["SO Name"]
-        color_style = row["Score"]
-        bg_style = "rgba(76, 175, 80, 0.15)" if st.session_state["expanded_so"] == so else "rgba(255,255,255,0.9)"
         with st.container():
-            if st.button(f"{row['Rank']}. {so}", key=f"top_{so}"):
+            clicked = st.button(f"{row['Rank']}. {so}", key=f"top_{so}")
+            if clicked:
                 st.session_state["expanded_so"] = so if st.session_state["expanded_so"] != so else None
+
             st.markdown(
-                f"<div style='background-color:{bg_style};padding:8px;border-radius:8px;margin-top:-10px;border:1px solid #C8E6C9;'>"
-                f"<b>Functional:</b> {row['Functional Schemes']} | <b>Updated Days:</b> {row['Updated Days']:.0f} | "
-                f"<b>Total Water:</b> {row['Total Water (m³)']:.2f} | <b>Score:</b> {row['Score']:.3f}</div>",
+                f"<div style='background-color:rgba(76,175,80,0.1);padding:8px;border-radius:8px;border:1px solid #81C784;'>"
+                f"<b>Functional:</b> {row['Functional Schemes']} | "
+                f"<b>Updated Days:</b> {row['Updated Days']:.0f} | "
+                f"<b>Total Water:</b> {row['Total Water (m³)']:.2f} | "
+                f"<b>Score:</b> {row['Score']:.3f}</div>",
                 unsafe_allow_html=True,
             )
             if st.session_state["expanded_so"] == so:
-                show_inline_chart(so)
+                show_inline_chart(so, "#4CAF50")
 
 # --------------------------- Worst Performing SOs ---------------------------
 with col_w:
     st.markdown("### 🔴 Worst 7 Performing SOs")
     for _, row in worst_table.iterrows():
         so = row["SO Name"]
-        bg_style = "rgba(244, 67, 54, 0.15)" if st.session_state["expanded_so"] == so else "rgba(255,255,255,0.9)"
         with st.container():
-            if st.button(f"{row['Rank']}. {so}", key=f"worst_{so}"):
+            clicked = st.button(f"{row['Rank']}. {so}", key=f"worst_{so}")
+            if clicked:
                 st.session_state["expanded_so"] = so if st.session_state["expanded_so"] != so else None
+
             st.markdown(
-                f"<div style='background-color:{bg_style};padding:8px;border-radius:8px;margin-top:-10px;border:1px solid #FFCDD2;'>"
-                f"<b>Functional:</b> {row['Functional Schemes']} | <b>Updated Days:</b> {row['Updated Days']:.0f} | "
-                f"<b>Total Water:</b> {row['Total Water (m³)']:.2f} | <b>Score:</b> {row['Score']:.3f}</div>",
+                f"<div style='background-color:rgba(244,67,54,0.1);padding:8px;border-radius:8px;border:1px solid #E57373;'>"
+                f"<b>Functional:</b> {row['Functional Schemes']} | "
+                f"<b>Updated Days:</b> {row['Updated Days']:.0f} | "
+                f"<b>Total Water:</b> {row['Total Water (m³)']:.2f} | "
+                f"<b>Score:</b> {row['Score']:.3f}</div>",
                 unsafe_allow_html=True,
             )
             if st.session_state["expanded_so"] == so:
-                show_inline_chart(so)
+                show_inline_chart(so, "#F44336")
 
 st.markdown("---")
 

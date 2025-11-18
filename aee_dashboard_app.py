@@ -64,7 +64,7 @@ def reset_session_data():
     st.session_state["selected_jalmitra"] = None
     st.session_state["selected_so_from_aee"] = None
 
-def generate_demo_data(total_schemes:int=20, so_name:str="ROKI RAY"):
+def generate_demo_data(total_schemes:int=23, so_name:str="ROKI RAY"):
     """
     Generate demo for single SO:
       - creates `total_schemes` schemes
@@ -1023,4 +1023,5 @@ readings_df = st.session_state.get("readings", pd.DataFrame())
 st.download_button("Schemes CSV", schemes_df.to_csv(index=False).encode("utf-8"), "schemes.csv")
 st.download_button("Readings CSV", readings_df.to_csv(index=False).encode("utf-8"), "readings.csv")
 st.success(f"Dashboard ready. Demo data generated: {st.session_state.get('demo_generated', False)}")
+
 

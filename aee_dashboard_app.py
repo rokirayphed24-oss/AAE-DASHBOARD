@@ -764,9 +764,9 @@ def render_so_dashboard(so_to_render: str):
             st.plotly_chart(fig1, use_container_width=True, height=220)
         with c2:
             # small-line text above jalmitra pie (only once)
+            st.markdown("#### Jalmitra Updates (Today)")
             st.markdown(f"<small>Present: <b>{present_count}</b> &nbsp;&nbsp; Absent: <b>{absent_count}</b></small>", unsafe_allow_html=True)
 
-            st.markdown("#### Jalmitra Updates (Today)")
             df_part = pd.DataFrame({"status":["Present","Absent"], "count":[present_count, absent_count]})
             if df_part["count"].sum() == 0:
                 df_part = pd.DataFrame({"status":["Present","Absent"], "count":[0, len(master_jalmitras) if master_jalmitras else 1]})

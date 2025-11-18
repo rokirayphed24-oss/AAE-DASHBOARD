@@ -1,200 +1,1003 @@
-# aee_dashboard_app.py
-# AEE Dashboard — Pie charts restored + Top/Worst tables + clickable SO view
-# - Shows Functionality pie and SO Updates pie (uses plotly if available)
-# - Top 7 / Worst 7 tables (styled), SO names as buttons below each table
-# - Clicking a name shows a non-interactive matplotlib chart and a small summary
+# jjm_demo_app.py
+# JJM Dashboard — Fix: per-SO mappings + correct present/absent detection + BFM today table
+# + demo update probability per-jalmitra (10%-95%) and explicit ideal_per_day range 20-100.
+# Replace your existing file with this full file.
 
 import streamlit as st
 import pandas as pd
-import random
+import numpy as np
 import datetime
-import matplotlib.pyplot as plt
-
-# try to import plotly for nicer pies; fallback if missing
-try:
-    import plotly.express as px
-    PLOTLY_AVAILABLE = True
-except Exception:
-    PLOTLY_AVAILABLE = False
+import random
+import plotly.express as px
 
 # --------------------------- Page setup ---------------------------
-st.set_page_config(page_title="JJM AEE Dashboard", layout="wide")
-AEE_NAME = "Er. ROKI RAY"
-SUBDIVISION = "Guwahati Subdivision"
-
-st.title("💧 Jal Jeevan Mission — AEE Dashboard")
-st.markdown(f"**Subdivision:** {SUBDIVISION}  •  **AEE:** {AEE_NAME}")
-st.markdown(f"**DATE:** {datetime.date.today().strftime('%A, %d %B %Y').upper()}")
+st.set_page_config(page_title="JJM Dashboard — Unified (Fixed)", layout="wide")
+try:
+    st.image("logo.jpg", width=160)
+except Exception:
+    pass
+st.title("Jal Jeevan Mission — Unified Dashboard")
 st.markdown("---")
 
-# --------------------------- Demo data generator ---------------------------
-def generate_aee_demo_data(num_sos=14, schemes_per_so=20):
-    sos = [
-        "Roki Ray", "Sanjay Das", "Anup Bora", "Ranjit Kalita", "Bikash Deka", "Manoj Das", "Dipankar Nath",
-        "Himangshu Deka", "Kamal Choudhury", "Rituraj Das", "Debojit Gogoi", "Utpal Saikia", "Pritam Bora", "Amit Baruah"
-    ][:num_sos]
-
-    records = []
-    scheme_rows = []
-    # create per-SO aggregated numbers (base for 7-day window)
-    for so in sos:
-        func_count = random.randint(10, schemes_per_so)
-        non_func_count = schemes_per_so - func_count
-        updated_today = random.randint(int(func_count * 0.5), func_count)
-        total_water_7d = round(random.uniform(300, 1500), 2)  # interpret as 7-day baseline
-        records.append({
-            "SO Name": so,
-            "Functional Schemes": func_count,
-            "Non-Functional Schemes": non_func_count,
-            "Total Schemes": func_count + non_func_count,
-            "Updated Today (7d-baseline)": updated_today,
-            "Total Water (7d-baseline m³)": total_water_7d
-        })
-        for i in range(schemes_per_so):
-            scheme_rows.append({"SO": so, "Scheme": f"{so.split()[0]}_Scheme_{i+1}",
-                                "Functionality": "Functional" if random.random() > 0.25 else "Non-Functional"})
-    return pd.DataFrame(records), pd.DataFrame(scheme_rows)
-
-base_metrics, scheme_df = generate_aee_demo_data()
-
-# --------------------------- Overview pies (plotly if available) ---------------------------
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("Scheme Functionality")
-    func_counts = scheme_df["Functionality"].value_counts()
-    if PLOTLY_AVAILABLE:
-        fig = px.pie(names=func_counts.index, values=func_counts.values,
-                     color=func_counts.index,
-                     color_discrete_map={"Functional": "#4CAF50", "Non-Functional": "#F44336"},
-                     title="")
-        fig.update_traces(textinfo='percent+label')
-        st.plotly_chart(fig, use_container_width=True, height=300)
-    else:
-        st.write(func_counts.to_frame(name="Count"))
-
-with col2:
-    st.subheader("SO Updates (today baseline)")
-    total_updated = base_metrics["Updated Today (7d-baseline)"].sum()
-    total_func = base_metrics["Functional Schemes"].sum()
-    upd_df = pd.DataFrame({"status": ["Updated", "Absent"],
-                           "count": [int(total_updated), int(max(total_func - total_updated, 0))]})
-    if PLOTLY_AVAILABLE:
-        fig2 = px.pie(upd_df, names="status", values="count",
-                      color="status", color_discrete_map={"Updated":"#4CAF50","Absent":"#F44336"})
-        fig2.update_traces(textinfo='percent+label')
-        st.plotly_chart(fig2, use_container_width=True, height=300)
-    else:
-        st.write(upd_df)
-
-st.markdown("---")
-
-# --------------------------- Duration selector ---------------------------
-st.subheader("Section Officer Performance (AEE view)")
-days = st.selectbox("Select window", [7, 15, 30], index=0, format_func=lambda x: f"{x} days")
-st.markdown(f"Showing results for last **{days} days**")
-st.markdown("")
-
-# --------------------------- Compute metrics for selected window ---------------------------
-def compute_period_metrics(base_df: pd.DataFrame, days: int):
-    # base_df has 7-day baseline numbers; scale to chosen days
-    df = base_df.copy()
-    # scale Updated baseline proportionally (assume Updated Today baseline for 7-day window)
-    df["Days Updated (last N)"] = (df["Updated Today (7d-baseline)"] * (days / 7)).round().astype(int)
-    df["Total Water (m³)"] = (df["Total Water (7d-baseline m³)"] * (days / 7)).round(2)
-    # score: 50% frequency (days updated / days) + 50% quantity scaled by max
-    max_water = df["Total Water (m³)"].max() if not df["Total Water (m³)"].empty else 1.0
-    df["Score"] = (0.5 * (df["Days Updated (last N)"] / days)) + (0.5 * (df["Total Water (m³)"] / max_water))
-    df = df.sort_values(by=["Score", "Total Water (m³)"], ascending=False).reset_index(drop=True)
-    df.insert(0, "Rank", range(1, len(df) + 1))
+# --------------------------- Helpers & session init ---------------------------
+def ensure_columns(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+    if df is None:
+        df = pd.DataFrame(columns=cols)
+    for c in cols:
+        if c not in df.columns:
+            if c in ("id", "scheme_id", "reading"):
+                df[c] = 0
+            elif c in ("water_quantity", "ideal_per_day"):
+                df[c] = 0.0
+            else:
+                df[c] = ""
     return df
 
-metrics = compute_period_metrics(base_metrics, days)
+def init_state():
+    st.session_state.setdefault("schemes", pd.DataFrame(columns=["id","scheme_name","functionality","so_name","ideal_per_day","scheme_label"]))
+    st.session_state.setdefault("readings", pd.DataFrame(columns=[
+        "id","scheme_id","jalmitra","reading","reading_date","reading_time","water_quantity","scheme_name","so_name"
+    ]))
+    st.session_state.setdefault("jalmitras_map", {})         # so_name -> list of jalmitras
+    st.session_state.setdefault("scheme_jalmitra_map", {})  # so_name -> {scheme_id: jalmitra}
+    st.session_state.setdefault("jalmitra_scheme_map", {})  # so_name -> {jalmitra: scheme_label}
+    st.session_state.setdefault("next_scheme_id", 1)
+    st.session_state.setdefault("next_reading_id", 1)
+    st.session_state.setdefault("demo_generated", False)
+    st.session_state.setdefault("selected_jalmitra", None)
+    st.session_state.setdefault("selected_so_from_aee", None)
+    st.session_state.setdefault("view_mode", "Web View")
 
-# --------------------------- Top & Worst tables (styled) ---------------------------
-top7 = metrics.head(7).copy()
-worst7 = metrics.tail(7).sort_values(by="Score", ascending=True).reset_index(drop=True)
+init_state()
 
-st.markdown("#### Top 7 Performing SOs")
-st.dataframe(
-    top7.style.format({
-        "Total Water (m³)": "{:.2f}",
-        "Score": "{:.3f}"
-    }).background_gradient(subset=["Days Updated (last N)", "Total Water (m³)", "Score"], cmap="Greens")
-, use_container_width=True, height=300)
+# --------------------------- Demo generation & reset -----------
+def reset_session_data():
+    st.session_state["schemes"] = pd.DataFrame(columns=["id","scheme_name","functionality","so_name","ideal_per_day","scheme_label"])
+    st.session_state["readings"] = pd.DataFrame(columns=[
+        "id","scheme_id","jalmitra","reading","reading_date","reading_time","water_quantity","scheme_name","so_name"])
+    st.session_state["jalmitras_map"] = {}
+    st.session_state["scheme_jalmitra_map"] = {}
+    st.session_state["jalmitra_scheme_map"] = {}
+    st.session_state["next_scheme_id"] = 1
+    st.session_state["next_reading_id"] = 1
+    st.session_state["demo_generated"] = False
+    st.session_state["selected_jalmitra"] = None
+    st.session_state["selected_so_from_aee"] = None
 
-st.markdown("#### Worst 7 Performing SOs")
-st.dataframe(
-    worst7.style.format({
-        "Total Water (m³)": "{:.2f}",
-        "Score": "{:.3f}"
-    }).background_gradient(subset=["Days Updated (last N)", "Total Water (m³)", "Score"], cmap="Reds_r")
-, use_container_width=True, height=300)
+def generate_demo_data(total_schemes:int=20, so_name:str="ROKI RAY"):
+    """
+    Generate demo for single SO:
+      - creates `total_schemes` schemes
+      - assigns one jalmitra per scheme (unique)
+      - stores mappings under st.session_state keyed by so_name
+      - generates readings for last 30 days (only for Functional schemes)
+      - each jalmitra has a random per-day-update probability between 10% and 95%
+    """
+    assamese = [
+        "Biren","Nagen","Rahul","Vikram","Debojit","Anup","Kamal","Ranjit","Himangshu",
+        "Pranjal","Rupam","Dilip","Utpal","Amit","Jayanta","Hemanta","Rituraj","Dipankar",
+        "Bikash","Dhruba","Subham","Pritam","Saurav","Bijoy","Manoj","Rupen","Kumar"
+    ]
+    villages = [
+        "Rampur","Kahikuchi","Dalgaon","Guwahati","Boko","Moran","Tezpur","Sibsagar",
+        "Jorhat","Hajo","Tihu","Kokrajhar","Nalbari","Barpeta","Rangia","Goalpara","Dhemaji",
+        "Dibrugarh","Mariani","Sonari"
+    ]
+    today = datetime.date.today()
+    schemes = []
+    readings = []
+    scheme_jalmitra_map = {}
+    jalmitra_scheme_map = {}
+    jalmitras = []
+    jalmitra_probs = {}
 
-st.markdown("---")
+    # create unique jalmitra names (one per scheme) and a per-jalmitra update-probability
+    for i in range(total_schemes):
+        base = assamese[i % len(assamese)]
+        jm_name = f"{base}_{i+1}"
+        jalmitras.append(jm_name)
+        # per-jalmitra probability between 10% and 95%
+        jalmitra_probs[jm_name] = round(random.uniform(0.10, 0.95), 3)
 
-# --------------------------- Clickable SO names below tables ---------------------------
-st.subheader("Open SO Dashboard (click a name)")
+    reading_samples = [110010,215870,150340,189420,200015,234870]
 
-left_col, right_col = st.columns(2)
+    # create schemes and map unique jalmitra to scheme
+    sid_start = st.session_state.get("next_scheme_id", 1)
+    for i in range(total_schemes):
+        sid = sid_start + i
+        # explicit ideal range 20 - 100 m³
+        ideal_per_day = round(random.uniform(20.0, 100.0), 2)
+        scheme_label = random.choice(villages) + " PWSS"
+        functionality = random.choice(["Functional","Non-Functional"])
+        schemes.append({
+            "id": sid,
+            "scheme_name": f"Scheme {chr(65 + (i % 26))}{'' if i < 26 else i//26}",
+            "functionality": functionality,
+            "so_name": so_name,
+            "ideal_per_day": ideal_per_day,
+            "scheme_label": scheme_label
+        })
+        assigned_jm = jalmitras[i]
+        scheme_jalmitra_map[sid] = assigned_jm
+        jalmitra_scheme_map[assigned_jm] = scheme_label
 
-with left_col:
-    st.markdown("**Top 7 — click to view**")
-    for i, r in top7.iterrows():
-        name = r["SO Name"]
-        if st.button(f"{r['Rank']}. {name}", key=f"topbtn_{name}_{days}"):
-            st.session_state["aee_selected_so"] = name
+    # generate readings for functional schemes for last 30 days using per-jalmitra probability
+    rid = st.session_state.get("next_reading_id", 1)
+    days_to_generate = 30
+    for s in schemes:
+        if s["functionality"] != "Functional":
+            continue
+        assigned_jm = scheme_jalmitra_map[s["id"]]
+        jm_prob = jalmitra_probs.get(assigned_jm, 0.5)
+        for d in range(days_to_generate):
+            date_iso = (today - datetime.timedelta(days=d)).isoformat()
+            if random.random() < jm_prob:
+                hour = random.randint(6, 11)
+                minute = random.choice([0,15,30,45])
+                time_str = f"{hour}:{minute:02d} AM"
+                water_qty = round(random.uniform(10.0, 100.0), 2)
+                readings.append({
+                    "id": rid,
+                    "scheme_id": s["id"],
+                    "jalmitra": assigned_jm,
+                    "reading": random.choice(reading_samples),
+                    "reading_date": date_iso,
+                    "reading_time": time_str,
+                    "water_quantity": water_qty,
+                    "scheme_name": s["scheme_label"],
+                    "so_name": so_name
+                })
+                rid += 1
 
-with right_col:
-    st.markdown("**Worst 7 — click to view**")
-    for i, r in worst7.iterrows():
-        name = r["SO Name"]
-        if st.button(f"{r['Rank']}. {name}", key=f"worstbtn_{name}_{days}"):
-            st.session_state["aee_selected_so"] = name
+    # merge new data into session (append if session already has data for same SO)
+    schemes_df = st.session_state["schemes"]
+    readings_df = st.session_state["readings"]
 
-# --------------------------- Show SO dashboard-like view when selected ---------------------------
-if "aee_selected_so" in st.session_state and st.session_state["aee_selected_so"]:
-    so_name = st.session_state["aee_selected_so"]
-    st.markdown("---")
-    st.subheader(f"Section Officer Dashboard — {so_name}")
-    # find metrics row
-    row = metrics[metrics["SO Name"] == so_name].iloc[0]
+    new_schemes_df = pd.DataFrame(schemes)
+    new_readings_df = pd.DataFrame(readings)
 
-    # summary (visible card)
-    st.markdown(
-        f"""
-        <div style="background:#ffffff;border:1px solid #e6e6e6;padding:12px;border-radius:8px;">
-          <b>SO:</b> {so_name} &nbsp;&nbsp; | &nbsp;&nbsp;
-          <b>Days Updated:</b> {int(row['Days Updated (last N)'])}/{days} &nbsp;&nbsp; | &nbsp;&nbsp;
-          <b>Total Water:</b> {row['Total Water (m³)']:.2f} m³ &nbsp;&nbsp; | &nbsp;&nbsp;
-          <b>Score:</b> {row['Score']:.3f}
-        </div>
-        """,
-        unsafe_allow_html=True
+    if not new_schemes_df.empty:
+        schemes_df = pd.concat([schemes_df, new_schemes_df], ignore_index=True)
+    if not new_readings_df.empty:
+        readings_df = pd.concat([readings_df, new_readings_df], ignore_index=True)
+
+    st.session_state["schemes"] = schemes_df.reset_index(drop=True)
+    st.session_state["readings"] = readings_df.reset_index(drop=True)
+    st.session_state["jalmitras_map"][so_name] = jalmitras
+    st.session_state["scheme_jalmitra_map"].setdefault(so_name, {})
+    st.session_state["scheme_jalmitra_map"][so_name].update(scheme_jalmitra_map)
+    st.session_state["jalmitra_scheme_map"].setdefault(so_name, {})
+    st.session_state["jalmitra_scheme_map"][so_name].update(jalmitra_scheme_map)
+    st.session_state["next_scheme_id"] = sid_start + total_schemes
+    st.session_state["next_reading_id"] = rid
+    st.session_state["demo_generated"] = True
+    st.success(f"✅ Demo data generated for {so_name}.")
+
+def generate_multi_so_demo(num_sos=14, schemes_per_so=18, max_days=30):
+    """
+    Generate multi-SO demo for AEE view and store per-SO mappings.
+    Each Jalmitra gets a deterministic RNG and a per-jalmitra update probability between 10%-95%.
+    """
+    random.seed(42)
+    base_so_names = [
+        "ROKI RAY", "Sanjay Das", "Anup Bora", "Ranjit Kalita", "Bikash Deka", "Manoj Das",
+        "Dipankar Nath", "Himangshu Deka", "Kamal Choudhury", "Rituraj Das", "Debojit Gogoi",
+        "Utpal Saikia", "Pritam Bora", "Amit Baruah", "Sunil Kumar", "Raju Das"
+    ][:max(1, num_sos)]
+
+    schemes_rows = []
+    readings_rows = []
+    jalmitras_map = {}
+    scheme_jalmitra_map_all = {}
+    jalmitra_scheme_map_all = {}
+    sid = st.session_state.get("next_scheme_id", 1)
+    rid = st.session_state.get("next_reading_id", 1)
+    today = datetime.date.today()
+    villages = [
+        "Rampur","Kahikuchi","Dalgaon","Guwahati","Boko","Moran","Tezpur","Sibsagar",
+        "Jorhat","Hajo","Tihu","Kokrajhar","Nalbari","Barpeta","Rangia","Goalpara","Dhemaji",
+        "Dibrugarh","Mariani","Sonari"
+    ]
+    assamese = [
+        "Biren","Nagen","Rahul","Vikram","Debojit","Anup","Kamal","Ranjit","Himangshu",
+        "Pranjal","Rupam","Dilip","Utpal","Amit","Jayanta","Hemanta","Rituraj","Dipankar",
+        "Bikash","Dhruba","Subham","Pritam","Saurav","Bijoy","Manoj"
+    ]
+
+    # Build schemes and per-SO jalmitra lists (with mappings)
+    for so_index, so in enumerate(base_so_names[:num_sos]):
+        jm_list = []
+        for i in range(schemes_per_so):
+            jm_name = f"{assamese[(so_index*schemes_per_so + i) % len(assamese)]}_{so_index+1}_{i+1}"
+            jm_list.append(jm_name)
+        jalmitras_map[so] = jm_list
+        scheme_jalmitra_map_all[so] = {}
+        jalmitra_scheme_map_all[so] = {}
+
+        for i in range(schemes_per_so):
+            # explicit ideal range 20 - 100 m³
+            ideal_per_day = round(random.uniform(20.0, 100.0), 2)
+            scheme_label = random.choice(villages) + " PWSS"
+            func = "Functional" if random.random() > 0.25 else "Non-Functional"
+            schemes_rows.append({
+                "id": sid,
+                "scheme_name": f"Scheme_{sid}_{so.split()[0]}",
+                "functionality": func,
+                "so_name": so,
+                "ideal_per_day": ideal_per_day,
+                "scheme_label": scheme_label
+            })
+            assigned_jm = jm_list[i]
+            scheme_jalmitra_map_all[so][sid] = assigned_jm
+            jalmitra_scheme_map_all[so][assigned_jm] = scheme_label
+            sid += 1
+
+    # Generate readings for each SO's functional schemes with per-jm probability
+    for so in jalmitras_map.keys():
+        so_schemes = [r for r in schemes_rows if r["so_name"] == so and r["functionality"] == "Functional"]
+        so_scheme_ids = [s["id"] for s in so_schemes]
+        jm_list = jalmitras_map[so]
+        # For deterministic but distinct probability per (so,jm) use jm_rng seeded by hash
+        for jm in jm_list:
+            jm_rng = random.Random(abs(hash(so + jm)) % (2**32))
+            jm_prob = jm_rng.uniform(0.10, 0.95)
+            for d in range(max_days):
+                date_iso = (today - datetime.timedelta(days=d)).isoformat()
+                if jm_rng.random() < jm_prob and so_scheme_ids:
+                    hour = jm_rng.randint(6, 11)
+                    minute = jm_rng.choice([0,15,30,45])
+                    time_str = f"{hour}:{minute:02d} AM"
+                    water_qty = round(jm_rng.uniform(10.0, 100.0), 2)
+                    readings_rows.append({
+                        "id": rid,
+                        "scheme_id": jm_rng.choice(so_scheme_ids),
+                        "jalmitra": jm,
+                        "reading": jm_rng.choice([110010,215870,150340,189420,200015,234870]),
+                        "reading_date": date_iso,
+                        "reading_time": time_str,
+                        "water_quantity": water_qty,
+                        "so_name": so
+                    })
+                    rid += 1
+
+    schemes_df_new = pd.DataFrame(schemes_rows)
+    readings_df_new = pd.DataFrame(readings_rows)
+
+    # attach scheme_label into readings_df_new where possible
+    if not readings_df_new.empty and not schemes_df_new.empty:
+        readings_df_new = readings_df_new.merge(schemes_df_new[["id","scheme_label"]], left_on="scheme_id", right_on="id", how="left")
+        if "scheme_label" in readings_df_new.columns:
+            readings_df_new["scheme_name"] = readings_df_new["scheme_label"]
+            readings_df_new.drop(columns=["scheme_label"], inplace=True, errors="ignore")
+
+    # Append to session
+    if not schemes_df_new.empty:
+        st.session_state["schemes"] = pd.concat([st.session_state["schemes"], schemes_df_new], ignore_index=True)
+    if not readings_df_new.empty:
+        st.session_state["readings"] = pd.concat([st.session_state["readings"], readings_df_new], ignore_index=True)
+
+    # merge mapping dicts into session per SO
+    for so in jalmitras_map:
+        st.session_state["jalmitras_map"].setdefault(so, [])
+        st.session_state["jalmitras_map"][so] = jalmitras_map[so]
+        st.session_state["scheme_jalmitra_map"].setdefault(so, {})
+        st.session_state["scheme_jalmitra_map"][so].update(scheme_jalmitra_map_all.get(so, {}))
+        st.session_state["jalmitra_scheme_map"].setdefault(so, {})
+        st.session_state["jalmitra_scheme_map"][so].update(jalmitra_scheme_map_all.get(so, {}))
+
+    st.session_state["next_scheme_id"] = sid
+    st.session_state["next_reading_id"] = rid
+    st.session_state["demo_generated"] = True
+    st.success("✅ Multi-SO demo generated for AEE.")
+
+# --------------------------- compute_metrics (robust version) -----------
+@st.cache_data
+def compute_metrics(readings: pd.DataFrame, schemes: pd.DataFrame, so: str, start: str, end: str):
+    """
+    Compute per-jalmitra metrics for a given SO and date window.
+    This version is robust to merged column suffixing (so_name_reading / so_name_scheme etc).
+    Returns (filtered_merged_rows, metrics_df).
+    """
+    # Ensure input frames have the expected columns
+    r = ensure_columns(readings.copy() if readings is not None else pd.DataFrame(), [
+        "id", "scheme_id", "jalmitra", "reading", "reading_date", "reading_time", "water_quantity", "scheme_name", "so_name"
+    ])
+    s = ensure_columns(schemes.copy() if schemes is not None else pd.DataFrame(), [
+        "id", "scheme_name", "functionality", "so_name", "ideal_per_day", "scheme_label"
+    ])
+
+    # Merge on scheme id (left=readings, right=schemes). Right-side 'id' will be suffixed if conflicts.
+    merged = r.merge(
+        s[["id", "scheme_name", "functionality", "so_name", "ideal_per_day", "scheme_label"]],
+        left_on="scheme_id", right_on="id", how="left", suffixes=("_reading", "_scheme")
     )
 
-    # simulate daily data for this SO (deterministic by seed)
-    random.seed(hash(so_name) % 9999)
-    dates = [(datetime.date.today() - datetime.timedelta(days=i)).isoformat() for i in reversed(range(days))]
-    vals = [round(random.uniform(30, 100), 2) for _ in range(days)]
-    daily_df = pd.DataFrame({"Date": dates, "Water (m³)": vals})
+    # After merge, overlapping columns will be present as e.g. so_name_reading / so_name_scheme.
+    # Build unified columns using whichever is present.
+    # Helper to pick column if exists else return a series of empty strings
+    def col_or_empty(df, colname, fallback=""):
+        if colname in df.columns:
+            return df[colname]
+        else:
+            return pd.Series([fallback] * len(df), index=df.index)
 
-    # non-interactive matplotlib bar chart (compact)
-    fig, ax = plt.subplots(figsize=(8, 2.8))
-    ax.bar(daily_df["Date"], daily_df["Water (m³)"], color="#2b7a0b")
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Water (m³)")
-    ax.set_title(f"{so_name} — Daily Water Supplied (Last {days} days)")
-    ax.tick_params(axis='x', rotation=45, labelsize=8)
-    plt.tight_layout()
-    st.pyplot(fig)
+    # unify fields into consistent column names
+    so_reading = col_or_empty(merged, "so_name_reading")
+    so_scheme = col_or_empty(merged, "so_name_scheme")
+    merged["so_name"] = so_reading.fillna("").replace("", np.nan).fillna(so_scheme.fillna("").astype(str)).fillna("").astype(str)
 
-    # Close button
-    if st.button("Close SO View", key=f"close_so_{so_name}_{days}"):
-        st.session_state["aee_selected_so"] = None
+    scheme_name_reading = col_or_empty(merged, "scheme_name_reading")
+    scheme_name_scheme = col_or_empty(merged, "scheme_name_scheme")
+    merged["Scheme Display"] = scheme_name_reading.combine_first(scheme_name_scheme).fillna(merged.get("scheme_name", ""))
 
+    # ensure functionality and ideal_per_day available
+    merged["functionality"] = col_or_empty(merged, "functionality").fillna("")
+    merged["ideal_per_day"] = pd.to_numeric(col_or_empty(merged, "ideal_per_day", 0.0), errors="coerce").fillna(0.0)
+
+    # filter to functional schemes for this SO and date window
+    mask = (
+        (merged.get("functionality", "") == "Functional")
+        & (merged.get("so_name", "") == so)
+        & (merged.get("reading_date", "") >= start)
+        & (merged.get("reading_date", "") <= end)
+    )
+    lastN = merged.loc[mask].copy()
+    if lastN.empty:
+        # return an empty metrics DataFrame with expected columns so callers don't blow up
+        empty_metrics = pd.DataFrame(columns=["jalmitra", "days_updated", "total_water_m3", "schemes_covered", "ideal_total_Nd", "quantity_score"])
+        return lastN, empty_metrics
+
+    # compute days_count safely
+    try:
+        days_count = (pd.to_datetime(end) - pd.to_datetime(start)).days + 1
+        if days_count <= 0:
+            days_count = 1
+    except Exception:
+        days_count = 7
+
+    # normalize numeric columns
+    lastN["water_quantity"] = pd.to_numeric(lastN.get("water_quantity", 0.0), errors="coerce").fillna(0.0).round(2)
+    lastN["ideal_per_day"] = pd.to_numeric(lastN.get("ideal_per_day", 0.0), errors="coerce").fillna(0.0)
+
+    # aggregate per jalmitra
+    agg = lastN.groupby("jalmitra").agg(
+        days_updated=("reading_date", lambda x: x.nunique()),
+        total_water_m3=("water_quantity", "sum"),
+        schemes_covered=("scheme_id", lambda x: x.nunique())
+    ).reset_index()
+
+    # compute ideal contributions per unique (jalmitra, scheme) pair across the window
+    scheme_ideal = lastN[["jalmitra", "scheme_id", "ideal_per_day"]].drop_duplicates(subset=["jalmitra", "scheme_id"])
+    # if ideal_per_day missing, treat as 0
+    scheme_ideal["ideal_Nd"] = pd.to_numeric(scheme_ideal["ideal_per_day"], errors="coerce").fillna(0.0) * float(days_count)
+    ideal_sum = scheme_ideal.groupby("jalmitra")["ideal_Nd"].sum().reset_index().rename(columns={"ideal_Nd": "ideal_total_Nd"})
+
+    metrics = agg.merge(ideal_sum, on="jalmitra", how="left")
+    metrics["ideal_total_Nd"] = metrics["ideal_total_Nd"].fillna(0.0).round(2)
+
+    # quantity score = min(total_water / ideal_total_Nd, 1.0) (0 if ideal_total_Nd <= 0)
+    def compute_qs(row):
+        ideal = float(row.get("ideal_total_Nd", 0.0) or 0.0)
+        water = float(row.get("total_water_m3", 0.0) or 0.0)
+        if ideal <= 0:
+            return 0.0
+        return min(water / ideal, 1.0)
+
+    metrics["quantity_score"] = metrics.apply(compute_qs, axis=1)
+    metrics["days_updated"] = metrics["days_updated"].astype(int)
+    metrics["total_water_m3"] = metrics["total_water_m3"].astype(float).round(2)
+    metrics["quantity_score"] = metrics["quantity_score"].astype(float).round(3)
+    metrics.attrs["days_count"] = days_count
+
+    return lastN, metrics
+
+# --------------------------- Sidebar & AEE demo controls ---------------------------
+st.sidebar.header("Demo Controls")
+if st.sidebar.button("Generate multi-SO demo (14 SOs)"):
+    generate_multi_so_demo(num_sos=14, schemes_per_so=18, max_days=30)
+if st.sidebar.button("Clear demo data (sidebar)"):
+    reset_session_data()
+    st.sidebar.warning("Session demo data cleared (sidebar).")
+st.sidebar.markdown("---")
+st.sidebar.write("SO demo generator available on the Section Officer page.")
+
+# --------------------------- Top: role & view ---------------------------
+_roles = ["Section Officer", "Assistant Executive Engineer", "Executive Engineer"]
+col_r1, col_r2 = st.columns([2,1])
+with col_r1:
+    role = st.selectbox("Select Role", _roles, index=0, key="role_widget")
+with col_r2:
+    st.session_state["view_mode"] = st.radio("View Mode", ["Web View", "Phone View"], horizontal=True, key="view_widget")
 st.markdown("---")
-st.subheader("Export")
-st.download_button("Download AEE metrics (CSV)", metrics.to_csv(index=False).encode("utf-8"), file_name=f"aee_metrics_{days}d.csv")
-st.download_button("Download Scheme list (CSV)", scheme_df.to_csv(index=False).encode("utf-8"), file_name="aee_schemes.csv")
-st.success("AEE dashboard ready.")
+
+# --------------------------- AEE page -----------
+if role == "Assistant Executive Engineer":
+    st.header("Assistant Executive Engineer Dashboard (Aggregated from SOs)")
+    st.markdown(f"**AEE:** Er. ROKI RAY  •  **Subdivision:** Guwahati")
+    st.markdown(f"**DATE:** {datetime.date.today().strftime('%A, %d %B %Y').upper()}")
+    st.markdown("---")
+
+    st.markdown("#### AEE demo controls (generate or remove SOs under this AEE)")
+    ac1, ac2, ac3 = st.columns([2,1,1])
+    with ac1:
+        aee_num_sos = st.number_input("Number of SOs to generate", min_value=1, max_value=30, value=14, key="aee_num_sos")
+        aee_schemes_per_so = st.number_input("Schemes per SO", min_value=4, max_value=50, value=18, key="aee_schemes_per_so")
+    with ac2:
+        if st.button("Generate AEE demo (in-page)", key="btn_aee_gen_inpage"):
+            generate_multi_so_demo(num_sos=int(aee_num_sos), schemes_per_so=int(aee_schemes_per_so), max_days=30)
+    with ac3:
+        if st.button("Remove AEE demo (in-page)", key="btn_aee_rem_inpage"):
+            reset_session_data()
+            st.success("✅ AEE demo removed from session (in-page).")
+
+    st.markdown("---")
+    if not st.session_state["demo_generated"]:
+        st.info("For AEE view, generate multi-SO demo data using the buttons above (or use the sidebar).")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Scheme Functionality (all SOs)")
+        if not st.session_state["schemes"].empty:
+            func_counts = st.session_state["schemes"]["functionality"].value_counts()
+            fig = px.pie(names=func_counts.index, values=func_counts.values, color=func_counts.index,
+                         color_discrete_map={"Functional":"#4CAF50","Non-Functional":"#F44336"})
+            fig.update_traces(textinfo='percent+label')
+            st.plotly_chart(fig, use_container_width=True, height=260)
+        else:
+            st.write("No schemes available.")
+    with col2:
+        st.subheader("SO Updates (today)")
+        today_iso = datetime.date.today().isoformat()
+        if not st.session_state["readings"].empty and st.session_state["demo_generated"]:
+            today_updates = st.session_state["readings"][st.session_state["readings"]["reading_date"] == today_iso]
+            total_updates = int(today_updates["jalmitra"].nunique())
+            total_functional = int(len(st.session_state["schemes"][st.session_state["schemes"]["functionality"] == "Functional"]))
+            df_upd = pd.DataFrame({"status":["Updated today (unique jalmitras)","Other (approx)"], "count":[total_updates, max(total_functional - total_updates, 0)]})
+            fig2 = px.pie(df_upd, names="status", values="count", color="status",
+                          color_discrete_map={"Updated today (unique jalmitras)":"#4CAF50","Other (approx)":"#F44336"})
+            fig2.update_traces(textinfo='percent+label')
+            st.plotly_chart(fig2, use_container_width=True, height=260)
+        else:
+            st.info("No readings available for today. Generate AEE demo to populate data.")
+
+    st.markdown("---")
+    st.subheader("Section Officer performance (aggregated from Jalmitra scores)")
+    period = st.selectbox("Select window (days)", [7,15,30], index=0, key="aee_period")
+    st.markdown(f"Showing performance for last **{period} days**")
+
+    # compute aggregated SO metrics (same logic as previous)
+    def compute_jalmitra_metrics_for_period(readings_df, schemes_df, period_days):
+        start_date = (datetime.date.today() - datetime.timedelta(days=period_days-1)).isoformat()
+        end_date = datetime.date.today().isoformat()
+        sel = readings_df[(readings_df["reading_date"] >= start_date) & (readings_df["reading_date"] <= end_date)].copy() if not readings_df.empty else pd.DataFrame()
+        rows = []
+        for so_key, jlist in st.session_state.get("jalmitras_map", {}).items():
+            for jm in jlist:
+                rows.append({"so_name": so_key, "jalmitra": jm})
+        base_jm = pd.DataFrame(rows)
+        if base_jm.empty and not sel.empty:
+            base_jm = sel[["so_name","jalmitra"]].drop_duplicates().rename(columns={"so_name":"so_name","jalmitra":"jalmitra"})
+        if base_jm.empty:
+            return pd.DataFrame(), pd.DataFrame()
+
+        grouped = sel.groupby(["so_name","jalmitra"]).agg(
+            days_updated = ("reading_date", lambda x: x.nunique()),
+            total_water = ("water_quantity", "sum")
+        ).reset_index() if not sel.empty else pd.DataFrame(columns=["so_name","jalmitra","days_updated","total_water"])
+
+        grouped = base_jm.merge(grouped, on=["so_name","jalmitra"], how="left").fillna({"days_updated":0,"total_water":0.0})
+        grouped["days_updated"] = grouped["days_updated"].astype(int)
+        grouped["total_water"] = grouped["total_water"].astype(float).round(2)
+        so_max = grouped.groupby("so_name")["total_water"].max().reset_index().rename(columns={"total_water":"so_max_total"})
+        grouped = grouped.merge(so_max, on="so_name", how="left")
+        grouped["so_max_total"] = grouped["so_max_total"].replace({0:np.nan})
+        grouped["qty_norm"] = (grouped["total_water"] / grouped["so_max_total"]).fillna(0.0)
+        grouped["days_norm"] = grouped["days_updated"] / float(period_days)
+        grouped["jal_score"] = (0.5 * grouped["days_norm"] + 0.5 * grouped["qty_norm"]).round(4)
+        grouped["jal_score"] = grouped["jal_score"].fillna(0.0)
+
+        so_metrics = grouped.groupby("so_name").agg(
+            so_score = ("jal_score", "mean"),
+            mean_days_updated = ("days_updated", "mean"),
+            total_water_so = ("total_water","sum"),
+            n_jalmitras = ("jalmitra", "nunique")
+        ).reset_index()
+        so_metrics["so_score"] = so_metrics["so_score"].fillna(0.0).round(4)
+        so_metrics["mean_days_updated"] = so_metrics["mean_days_updated"].round(2)
+        so_metrics["total_water_so"] = so_metrics["total_water_so"].round(2)
+        return grouped, so_metrics
+
+    jal_df_all, so_metrics = compute_jalmitra_metrics_for_period(st.session_state.get("readings", pd.DataFrame()), st.session_state.get("schemes", pd.DataFrame()), period)
+
+    if so_metrics.empty:
+        st.info("No readings available for the selected period. Generate multi-SO demo.")
+    else:
+        schemes_df = st.session_state.get("schemes", pd.DataFrame())
+        readings_df = st.session_state.get("readings", pd.DataFrame())
+
+        total_schemes_map = schemes_df.groupby("so_name")["id"].nunique().to_dict() if not schemes_df.empty else {}
+        func_schemes_map = schemes_df[schemes_df["functionality"]=="Functional"].groupby("so_name")["id"].nunique().to_dict() if not schemes_df.empty else {}
+        present_jm_today_map = {}
+        if not readings_df.empty and st.session_state["demo_generated"]:
+            today_reads = readings_df[readings_df["reading_date"] == datetime.date.today().isoformat()]
+            for so_key in so_metrics["so_name"].tolist():
+                present_jm_today_map[so_key] = int(today_reads[today_reads["so_name"] == so_key]["jalmitra"].nunique())
+        else:
+            for so_key in so_metrics["so_name"].tolist():
+                present_jm_today_map[so_key] = 0
+
+        start_window = (datetime.date.today() - datetime.timedelta(days=period-1)).isoformat()
+        end_window = datetime.date.today().isoformat()
+        schemes_updated_map = {}
+        if not readings_df.empty and st.session_state["demo_generated"]:
+            window_reads = readings_df[(readings_df["reading_date"] >= start_window) & (readings_df["reading_date"] <= end_window)]
+            for so_key in so_metrics["so_name"].tolist():
+                schemes_updated_map[so_key] = int(window_reads[window_reads["so_name"] == so_key]["scheme_id"].nunique())
+        else:
+            for so_key in so_metrics["so_name"].tolist():
+                schemes_updated_map[so_key] = 0
+
+        so_metrics["Total Schemes"] = so_metrics["so_name"].apply(lambda x: int(total_schemes_map.get(x, 0)))
+        so_metrics["Functional Schemes"] = so_metrics["so_name"].apply(lambda x: int(func_schemes_map.get(x, 0)))
+        so_metrics["Non-Functional Schemes"] = so_metrics.apply(lambda row: int(row["Total Schemes"] - row["Functional Schemes"]), axis=1)
+        so_metrics["Present Jalmitra (Today)"] = so_metrics["so_name"].apply(lambda x: int(present_jm_today_map.get(x, 0)))
+        so_metrics[f"Schemes Updated (last {period}d)"] = so_metrics["so_name"].apply(lambda x: int(min(schemes_updated_map.get(x, 0), total_schemes_map.get(x, 0))))
+        so_metrics["Score of SO"] = so_metrics["so_score"]
+        so_metrics = so_metrics.sort_values(by="Score of SO", ascending=False).reset_index(drop=True)
+        so_metrics.insert(0, "Rank", range(1, len(so_metrics)+1))
+        top7 = so_metrics.head(7).copy()
+        worst7 = so_metrics.tail(7).sort_values(by="Score of SO", ascending=True).reset_index(drop=True)
+
+        display_cols = ["Rank","so_name","Total Schemes","Functional Schemes","Non-Functional Schemes",
+                        "Present Jalmitra (Today)", f"Schemes Updated (last {period}d)","Score of SO"]
+        top7_display = top7[display_cols].rename(columns={"so_name":"SO Name"})
+        worst7_display = worst7[display_cols].rename(columns={"so_name":"SO Name"})
+
+        st.markdown("#### 🟢 Top 7 Performing SOs")
+        st.dataframe(top7_display.style.format({"Score of SO":"{:.3f}"}).background_gradient(subset=["Present Jalmitra (Today)", f"Schemes Updated (last {period}d)","Score of SO"], cmap="Greens"), use_container_width=True, height=320)
+        st.markdown("#### 🔴 Worst 7 Performing SOs")
+        st.dataframe(worst7_display.style.format({"Score of SO":"{:.3f}"}).background_gradient(subset=["Present Jalmitra (Today)", f"Schemes Updated (last {period}d)","Score of SO"], cmap="Reds_r"), use_container_width=True, height=320)
+
+        st.markdown("---")
+
+        # ------------------------- OPEN SO DASHBOARD BUTTONS -------------------------
+        st.subheader("Open an SO Dashboard (click a name below — opens a new tab)")
+
+        # --- nicer styles for the open buttons ---
+        st.markdown(
+            """
+            <style>
+            .aee-open-btn { display:inline-block; margin:6px 0; }
+
+            .aee-btn {
+                font-weight:600;
+                padding:10px 16px;
+                border-radius:12px;
+                border: none;
+                cursor: pointer;
+                text-decoration:none;
+                color: #0f1724;
+                box-shadow: 0 6px 18px rgba(5,10,25,0.35);
+                transition: transform .12s ease, box-shadow .12s ease;
+                display:inline-block;
+            }
+            .aee-btn:hover {
+                transform: translateY(-4px);
+                box-shadow: 0 12px 28px rgba(5,10,25,0.45);
+            }
+            .aee-btn-top {
+                background: linear-gradient(135deg, #dff6ec 0%, #b9f0c7 50%, #7ee092 100%);
+                color:#04221a;
+            }
+            .aee-btn-worst {
+                background: linear-gradient(135deg, #ffecee 0%, #ffd7d7 50%, #ffc3c3 100%);
+                color:#2b0b0b;
+            }
+            .aee-rank {
+                background: rgba(255,255,255,0.18);
+                padding:4px 8px;
+                border-radius:8px;
+                margin-right:8px;
+                font-weight:700;
+                font-size:0.9em;
+                color: inherit;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
+        leftcol, rightcol = st.columns(2)
+
+        with leftcol:
+            st.markdown("Top 7 — click to open (new tab)")
+            if not top7.empty:
+                for idx, r in top7.iterrows():
+                    nm = r["so_name"]
+                    rank = int(r["Rank"])
+                    url = f"?role=Section+Officer&so={nm.replace(' ','%20')}"
+                    html = (
+                        f'<div class="aee-open-btn">'
+                        f'<a class="aee-btn aee-btn-top" href="{url}" target="_blank">'
+                        f'<span class="aee-rank">{rank}</span> Open {rank}. {nm}'
+                        f'</a></div>'
+                    )
+                    st.markdown(html, unsafe_allow_html=True)
+            else:
+                st.write("No Top entries.")
+
+        with rightcol:
+            st.markdown("Worst 7 — click to open (new tab)")
+            if not worst7.empty:
+                for idx, r in worst7.iterrows():
+                    nm = r["so_name"]
+                    rank = int(r["Rank"])
+                    url = f"?role=Section+Officer&so={nm.replace(' ','%20')}"
+                    html = (
+                        f'<div class="aee-open-btn">'
+                        f'<a class="aee-btn aee-btn-worst" href="{url}" target="_blank">'
+                        f'<span class="aee-rank">{rank}</span> Open {rank}. {nm}'
+                        f'</a></div>'
+                    )
+                    st.markdown(html, unsafe_allow_html=True)
+            else:
+                st.write("No Worst entries.")
+
+        st.markdown("---")
+        st.subheader("Section Officer performance (aggregated from Jalmitra scores)")
+        # (Note: rest of code for SO page and other features follows unchanged)
+
+        # compute aggregated SO metrics (same logic as previous) - already defined above (kept for context)
+        # ... (the rest of the original logic continues as previously in the file)
+
+# --------------------------- Section Officer dashboard renderer (preserve SO page) -----------
+def render_so_dashboard(so_to_render: str):
+    so = so_to_render
+    today = datetime.date.today()
+    st.header(f"Section Officer Dashboard — {so}")
+    st.markdown(f"**DATE:** {today.strftime('%A, %d %B %Y').upper()}")
+
+    # Demo generator & remover for SO
+    st.markdown("### 🧪 Demo Data Management (SO)")
+    colg, colr = st.columns([2,1])
+    with colg:
+        total_schemes = st.number_input("Total demo schemes (SO)", min_value=4, max_value=150, value=20, key=f"so_total_schemes_{so}")
+        if st.button("Generate Demo Data (SO)", key=f"gen_so_{so}"):
+            generate_demo_data(int(total_schemes), so_name=so)
+    with colr:
+        if st.button("Remove Demo Data (SO)", key=f"rem_so_{so}"):
+            reset_session_data()
+            st.warning("🗑️ All SO demo data removed from session.")
+
+    st.markdown("---")
+
+    schemes_all = st.session_state.get("schemes", pd.DataFrame()).copy()
+    readings_all = st.session_state.get("readings", pd.DataFrame()).copy()
+
+    # If no schemes for this SO, instruct to generate
+    if schemes_all.empty or schemes_all[schemes_all.get("so_name","")==so].empty:
+        st.info("No schemes found for this SO. Use 'Generate Demo Data (SO)' above to create demo data for this SO.")
+        return
+
+    schemes = schemes_all[schemes_all["so_name"] == so].copy()
+    readings = readings_all[readings_all.get("so_name","") == so].copy()
+
+    # Build master_jalmitras from per-SO scheme_jalmitra_map (fixed)
+    scheme_jm_map_for_so = st.session_state.get("scheme_jalmitra_map", {}).get(so, {})
+    master_jalmitras = []
+    if scheme_jm_map_for_so:
+        for sid, jm in scheme_jm_map_for_so.items():
+            if sid in schemes["id"].values:
+                master_jalmitras.append(jm)
+    master_jalmitras = sorted(list(dict.fromkeys(master_jalmitras)))
+
+    # fallback: if master empty, use jalmitras_map or readings
+    if not master_jalmitras:
+        master_jalmitras = st.session_state.get("jalmitras_map", {}).get(so, [])
+    if not master_jalmitras:
+        master_jalmitras = sorted(readings["jalmitra"].dropna().unique().tolist())
+
+    func_counts = schemes["functionality"].value_counts()
+    today_iso = today.isoformat()
+
+    # build merged_all and ensure we have unified so_name and scheme_name fields (fix for 100% absent bug)
+    merged_all = ensure_columns(readings.copy(), ["id","scheme_id","jalmitra","reading","reading_date","reading_time","water_quantity","scheme_name","so_name"]) \
+                 .merge(ensure_columns(schemes.copy(), ["id","scheme_name","functionality","so_name","ideal_per_day","scheme_label"])[["id","scheme_name","functionality","so_name","ideal_per_day","scheme_label"]],
+                        left_on="scheme_id", right_on="id", how="left", suffixes=("_reading","_scheme"))
+
+    # unify so_name and scheme name into consistent columns
+    def _col_or_empty(df, colname, fallback=""):
+        if colname in df.columns:
+            return df[colname]
+        else:
+            return pd.Series([fallback] * len(df), index=df.index)
+
+    so_reading = _col_or_empty(merged_all, "so_name_reading")
+    so_scheme = _col_or_empty(merged_all, "so_name_scheme")
+    merged_all["so_name"] = so_reading.fillna("").replace("", np.nan).fillna(so_scheme.fillna("").astype(str)).fillna("").astype(str)
+
+    scheme_name_reading = _col_or_empty(merged_all, "scheme_name_reading")
+    scheme_name_scheme = _col_or_empty(merged_all, "scheme_name_scheme")
+    merged_all["scheme_name"] = scheme_name_reading.combine_first(scheme_name_scheme).fillna(merged_all.get("scheme_name",""))
+
+    # ensure functionality exists
+    merged_all["functionality"] = _col_or_empty(merged_all, "functionality").fillna("")
+
+    today_upd = merged_all[
+        (merged_all.get("reading_date", "") == today_iso) &
+        (merged_all.get("functionality", "") == "Functional") &
+        (merged_all.get("so_name", "") == so)
+    ].copy()
+
+    # If demo not generated, instruct and do not fabricate present/absent
+    if not st.session_state.get("demo_generated", False):
+        st.info("No demo data generated. Generate demo data for this SO (using the button above) or via the AEE demo to populate readings and BFM updates.")
+        return
+
+    # compute present jalmitras from today_upd (exact matches)
+    present_jalmitras = sorted(today_upd["jalmitra"].dropna().unique().tolist()) if not today_upd.empty else []
+    absent_jalmitras = [jm for jm in master_jalmitras if jm not in present_jalmitras]
+
+    present_count = len(present_jalmitras)
+    absent_count = len(absent_jalmitras)
+
+    # show pies
+    if st.session_state.get("view_mode","Web View") == "Web View":
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("#### Scheme Functionality")
+            fig1 = px.pie(names=func_counts.index, values=func_counts.values, color=func_counts.index,
+                          color_discrete_map={"Functional":"#4CAF50","Non-Functional":"#F44336"})
+            fig1.update_traces(textinfo='percent+label')
+            st.plotly_chart(fig1, use_container_width=True, height=220)
+        with c2:
+            st.markdown(f"<small>Present: <b>{present_count}</b> &nbsp;&nbsp; Absent: <b>{absent_count}</b></small>", unsafe_allow_html=True)
+
+            st.markdown("#### Jalmitra Updates (Today)")
+            df_part = pd.DataFrame({"status":["Present","Absent"], "count":[present_count, absent_count]})
+            if df_part["count"].sum() == 0:
+                df_part = pd.DataFrame({"status":["Present","Absent"], "count":[0, len(master_jalmitras) if master_jalmitras else 1]})
+            fig2 = px.pie(df_part, names='status', values='count', color='status',
+                          color_discrete_map={"Present":"#4CAF50","Absent":"#F44336"})
+            fig2.update_traces(textinfo='percent+label+value')
+            fig2.update_layout(title=f"Present: {present_count} • Absent: {absent_count}", margin=dict(t=30,b=10))
+            st.plotly_chart(fig2, use_container_width=True, height=260)
+    else:
+        st.markdown("#### Scheme Functionality")
+        fig1 = px.pie(names=func_counts.index, values=func_counts.values, color=func_counts.index,
+                      color_discrete_map={"Functional":"#4CAF50","Non-Functional":"#F44336"})
+        fig1.update_traces(textinfo='percent+label')
+        st.plotly_chart(fig1, use_container_width=True, height=220)
+
+        st.markdown(f"<small>Present: <b>{present_count}</b> &nbsp;&nbsp; Absent: <b>{absent_count}</b></small>", unsafe_allow_html=True)
+
+        st.markdown("#### Jalmitra Updates (Today)")
+        df_part = pd.DataFrame({"status":["Present","Absent"], "count":[present_count, absent_count]})
+        if df_part["count"].sum() == 0:
+            df_part = pd.DataFrame({"status":["Present","Absent"], "count":[0, len(master_jalmitras) if master_jalmitras else 1]})
+        fig2 = px.pie(df_part, names='status', values='count', color='status',
+                      color_discrete_map={"Present":"#4CAF50","Absent":"#F44336"})
+        fig2.update_traces(textinfo='percent+label+value')
+        fig2.update_layout(title=f"Present: {present_count} • Absent: {absent_count}", margin=dict(t=30,b=10))
+        st.plotly_chart(fig2, use_container_width=True, height=240)
+
+    st.markdown("---")
+
+    # --- BFM table: show readings updated today (if any) in a table, restored as requested ---
+    st.subheader("🧾 BFM Readings Updated Today")
+    # use merged_all to ensure scheme_name presence, filter by today & functional & this SO
+    bfm_df = merged_all[
+        (merged_all.get("reading_date", "") == today_iso) &
+        (merged_all.get("functionality", "") == "Functional") &
+        (merged_all.get("so_name", "") == so)
+    ].copy()
+    if not bfm_df.empty:
+        # select columns and create S.No
+        display_bfm = bfm_df[["jalmitra", "scheme_name", "reading", "reading_time", "water_quantity"]].copy()
+        display_bfm.insert(0, "S.No", range(1, len(display_bfm)+1))
+        display_bfm = display_bfm.rename(columns={"reading":"BFM Reading", "reading_time":"Reading Time", "water_quantity":"Water Quantity (m³)", "jalmitra":"Jalmitra", "scheme_name":"Scheme Name"})
+        # show styled dataframe (Streamlit will render pandas styler)
+        try:
+            st.dataframe(display_bfm.style.format({"Water Quantity (m³)":"{:.2f}"}), height=300, use_container_width=True)
+        except Exception:
+            st.table(display_bfm)
+    else:
+        st.info("No BFM readings updated today for this SO.")
+
+    st.markdown("---")
+
+    # Rankings (split full list) preserved
+    st.subheader("🏅 Jalmitra Performance — Top & Bottom (split full list)")
+    period = st.selectbox("Show performance for", [7, 15, 30], index=0, format_func=lambda x: f"{x} days", key=f"so_period_{so}")
+    start_date = (today - datetime.timedelta(days=period-1)).isoformat()
+    end_date = today_iso
+
+    lastN, metrics = compute_metrics(readings_all, schemes_all, so, start_date, end_date)
+
+    if lastN.empty or metrics.empty:
+        st.info(f"No readings in the last {period} days for this SO.")
+    else:
+        # ensure all expected jalmitras present in metrics
+        for jm in master_jalmitras:
+            if jm not in metrics["jalmitra"].values:
+                metrics = pd.concat([metrics, pd.DataFrame([{
+                    "jalmitra": jm, "days_updated": 0, "total_water_m3": 0.0, "schemes_covered": 0, "ideal_total_Nd": 0.0, "quantity_score": 0.0
+                }])], ignore_index=True)
+
+        metrics["days_norm"] = metrics["days_updated"] / float(period)
+        metrics["score"] = (0.5 * metrics["days_norm"]) + (0.5 * metrics["quantity_score"])
+        metrics = metrics.sort_values(by=["score","total_water_m3"], ascending=False).reset_index(drop=True)
+        metrics["Rank"] = metrics.index + 1
+
+        villages = ["Rampur","Kahikuchi","Dalgaon","Guwahati","Boko","Moran","Tezpur","Sibsagar","Jorhat","Hajo"]
+        rnd = random.Random(42)
+        metrics["Scheme Name"] = [rnd.choice(villages) + " PWSS" for _ in range(len(metrics))]
+        metrics["ideal_total_Nd"] = metrics.get("ideal_total_Nd", 0.0).round(2)
+
+        total_jm_count = len(metrics)
+        half = total_jm_count // 2
+        top_count = half
+        bottom_count = total_jm_count - top_count
+
+        top_metrics = metrics.head(top_count).copy()
+        bottom_metrics = metrics.tail(bottom_count).sort_values(by=["score","total_water_m3"], ascending=True).reset_index(drop=True).copy()
+
+        top_table = top_metrics[["Rank","jalmitra","Scheme Name","days_updated","total_water_m3","ideal_total_Nd","score"]].copy()
+        top_table.columns = ["Rank","Jalmitra","Scheme Name",f"Days Updated (last {period}d)","Total Water (m³)","Ideal Water (m³)","Score"]
+
+        bottom_table = bottom_metrics[["Rank","jalmitra","Scheme Name","days_updated","total_water_m3","ideal_total_Nd","score"]].copy()
+        bottom_table.columns = ["Rank","Jalmitra","Scheme Name",f"Days Updated (last {period}d)","Total Water (m³)","Ideal Water (m³)","Score"]
+
+        def styled_df(df, cmap):
+            sty = df.style.format({"Total Water (m³)":"{:.2f}","Ideal Water (m³)":"{:.2f}","Score":"{:.3f}"})
+            sty = sty.background_gradient(subset=[f"Days Updated (last {period}d)","Total Water (m³)","Score"], cmap=cmap)
+            sty = sty.set_table_styles([
+                {"selector":"th","props":[("font-weight","600"),("border","1px solid #ddd"),("background-color","#f7f7f7")]},
+                {"selector":"td","props":[("border","1px solid #eee")]}
+            ])
+            return sty
+
+        col_t, col_w = st.columns([1,1])
+        with col_t:
+            st.markdown(f"### 🟢 Top performing — last {period} days")
+            st.dataframe(styled_df(top_table, "Greens"), height=360)
+            st.download_button(f"⬇️ Download Top — {so} (CSV)", top_table.to_csv(index=False).encode("utf-8"), f"top_{so}.csv")
+        with col_w:
+            st.markdown(f"### 🔴 Bottom performing — last {period} days")
+            st.dataframe(styled_df(bottom_table, "Reds_r"), height=360)
+            st.download_button(f"⬇️ Download Bottom — {so} (CSV)", bottom_table.to_csv(index=False).encode("utf-8"), f"bottom_{so}.csv")
+
+        # Absent Jalmitras and assigned scheme (one-to-one)
+        absent_info = []
+        jm_scheme_map = st.session_state.get("jalmitra_scheme_map", {}).get(so, {})
+        scheme_jm_map = st.session_state.get("scheme_jalmitra_map", {}).get(so, {})
+        for jm in absent_jalmitras:
+            assigned_label = jm_scheme_map.get(jm)
+            if not assigned_label:
+                # try reverse lookup in scheme_jm_map
+                found = [sid for sid, ajm in scheme_jm_map.items() if ajm == jm and sid in schemes["id"].values]
+                if found:
+                    assigned_label = schemes[schemes["id"].isin(found)]["scheme_label"].unique().tolist()[0]
+            schemes_text = assigned_label if assigned_label else "—"
+            absent_info.append({"Jalmitra": jm, "Assigned Scheme": schemes_text})
+
+        st.markdown("---")
+        st.markdown(f"**Absent Jalmitras (today: {today_iso}) — {len(absent_info)}**")
+        if absent_info:
+            absent_df = pd.DataFrame(absent_info)
+            try:
+                sty = absent_df.style.set_table_styles([{"selector":"th","props":[("font-weight","600"),("background-color","#fff1f0")]},
+                                                       {"selector":"td","props":[("border","1px solid #eee")]}])
+                st.dataframe(sty, height=220)
+            except Exception:
+                st.table(absent_df)
+            st.download_button("⬇️ Download Absent Jalmitras (today) CSV", absent_df.to_csv(index=False).encode("utf-8"), f"absent_jalmitras_{today_iso}_{so}.csv")
+        else:
+            st.info("No absent Jalmitras today (all updated).")
+
+        # clickable names to show period chart inline
+        st.markdown("**Tap a name below to open the performance chart**")
+        top_names = top_table["Jalmitra"].tolist()
+        bottom_names = bottom_table["Jalmitra"].tolist()
+
+        if st.session_state.get("view_mode","Web View") == "Web View":
+            with st.container():
+                st.markdown("**Top — Tap name**")
+                if top_names:
+                    cols = st.columns(len(top_names))
+                    for i, name in enumerate(top_names):
+                        if cols[i].button(name, key=f"btn_top_{so}_{period}_{i}_{name}"):
+                            st.session_state["selected_jalmitra"] = None if st.session_state.get("selected_jalmitra") == name else name
+            with st.container():
+                st.markdown("**Bottom — Tap name**")
+                if bottom_names:
+                    cols = st.columns(len(bottom_names))
+                    for i, name in enumerate(bottom_names):
+                        if cols[i].button(name, key=f"btn_bottom_{so}_{period}_{i}_{name}"):
+                            st.session_state["selected_jalmitra"] = None if st.session_state.get("selected_jalmitra") == name else name
+        else:
+            st.markdown("**Top — Tap a name**")
+            for i, name in enumerate(top_names):
+                if st.button(name, key=f"pbtn_top_{so}_{period}_{i}_{name}"):
+                    st.session_state["selected_jalmitra"] = None if st.session_state.get("selected_jalmitra") == name else name
+            st.markdown("**Bottom — Tap a name**")
+            for i, name in enumerate(bottom_names):
+                if st.button(name, key=f"pbtn_bottom_{so}_{period}_{i}_{name}"):
+                    st.session_state["selected_jalmitra"] = None if st.session_state.get("selected_jalmitra") == name else name
+
+        # Inline performance chart for selected jalmitra (only if belongs to this SO)
+        sel_jm = st.session_state.get("selected_jalmitra")
+        if sel_jm and sel_jm in metrics["jalmitra"].values:
+            st.markdown("---")
+            st.subheader(f"Performance — {sel_jm}")
+            last_window, _ = compute_metrics(readings_all, schemes_all, so, start_date, end_date)
+            jm_data = last_window[last_window["jalmitra"] == sel_jm] if (not last_window.empty) else pd.DataFrame()
+            dates = [(today - datetime.timedelta(days=d)).isoformat() for d in reversed(range(period))]
+            if jm_data.empty:
+                st.info("No readings for this Jalmitra in the selected window.")
+                daily = pd.DataFrame({"reading_date": dates, "water_quantity": [0.0]*len(dates)})
+                ideal_val = 0.0
+            else:
+                daily = jm_data.groupby("reading_date")["water_quantity"].sum().reindex(dates, fill_value=0).reset_index()
+                daily.columns = ["reading_date","water_quantity"]
+                daily["water_quantity"] = daily["water_quantity"].round(2)
+                jm_scheme_label = st.session_state.get("jalmitra_scheme_map", {}).get(so, {}).get(sel_jm)
+                if not jm_scheme_label:
+                    reverse_map = {v:k for k,v in st.session_state.get("scheme_jalmitra_map", {}).get(so, {}).items()}
+                    sid = reverse_map.get(sel_jm)
+                    if sid:
+                        matched = schemes_all[schemes_all["id"]==sid]
+                        ideal_val = matched["ideal_per_day"].iloc[0] if not matched.empty else 0.0
+                    else:
+                        ideal_val = 0.0
+                else:
+                    matched = schemes_all[schemes_all["scheme_label"] == jm_scheme_label]
+                    ideal_val = matched["ideal_per_day"].iloc[0] if not matched.empty else 0.0
+                ideal_total = round(float(ideal_val) * period, 2)
+            per_day_ideal = ideal_val
+            daily["color_flag"] = daily["water_quantity"].apply(lambda x: "above" if x >= per_day_ideal and per_day_ideal>0 else "below")
+            fig = px.bar(daily, x="reading_date", y="water_quantity", labels={"reading_date":"Date","water_quantity":"Water (m³)"},
+                         title=f"{sel_jm} — Daily Water Supplied (Last {period} Days)",
+                         color="color_flag", color_discrete_map={"above":"#2e7d32","below":"#c62828"})
+            if per_day_ideal > 0:
+                fig.add_hline(y=per_day_ideal, line_dash="dash", line_color="red", annotation_text=f"Ideal/day: {per_day_ideal:.2f} m³", annotation_position="top left")
+            fig.update_layout(showlegend=False, xaxis_tickangle=-45)
+            st.plotly_chart(fig, use_container_width=True, height=380)
+
+            download_df = daily.rename(columns={"reading_date":"Date","water_quantity":"Water (m3)"}).copy()
+            download_df["Ideal per day (m3)"] = per_day_ideal
+            download_df["Ideal total (m3)"] = per_day_ideal * period
+            st.markdown(f"**Total ({period} days):** {download_df['Water (m3)'].sum():.2f} m³  **Days Updated:** {(download_df['Water (m3)']>0).sum()}/{period}")
+            st.download_button(f"⬇️ Download {sel_jm} readings (last {period} days)", download_df.to_csv(index=False).encode("utf-8"), file_name=f"{sel_jm}_readings_{period}d.csv")
+
+            if st.session_state.get("view_mode","Web View") == "Web View":
+                if st.button("Close View"):
+                    st.session_state["selected_jalmitra"] = None
+            else:
+                if st.button("Close View (Phone)"):
+                    st.session_state["selected_jalmitra"] = None
+
+# --------------------------- Render logic -----------
+if role == "Section Officer":
+    # if user arrived with query param ?so=Name open that SO, else default ROKI RAY main SO page
+    query_so = st.experimental_get_query_params().get("so", [None])[0] if st.experimental_get_query_params() else None
+    if query_so:
+        render_so_dashboard(query_so)
+    else:
+        render_so_dashboard("ROKI RAY")
+
+elif role == "Assistant Executive Engineer":
+    # AEE page already rendered above
+    pass
+else:
+    st.header(f"{role} Dashboard — Placeholder")
+    st.info("Placeholder view. Implement similarly when needed.")
+
+# --------------------------- Exports & footer -----------
+st.markdown("---")
+st.subheader("📤 Export Snapshot")
+schemes_df = st.session_state.get("schemes", pd.DataFrame())
+readings_df = st.session_state.get("readings", pd.DataFrame())
+st.download_button("Schemes CSV", schemes_df.to_csv(index=False).encode("utf-8"), "schemes.csv")
+st.download_button("Readings CSV", readings_df.to_csv(index=False).encode("utf-8"), "readings.csv")
+st.success(f"Dashboard ready. Demo data generated: {st.session_state.get('demo_generated', False)}")

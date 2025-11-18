@@ -439,6 +439,12 @@ if role == "Assistant Executive Engineer":
         st.subheader("Scheme Functionality (all SOs)")
         if not st.session_state["schemes"].empty:
             func_counts = st.session_state["schemes"]["functionality"].value_counts()
+
+            # Small single-line summary above functionality pie
+            func_present = int(func_counts.get("Functional", 0))
+            func_non = int(func_counts.get("Non-Functional", 0))
+            st.markdown(f"<small>Functional: <b>{func_present}</b> • Non-Functional: <b>{func_non}</b></small>", unsafe_allow_html=True)
+
             fig = px.pie(names=func_counts.index, values=func_counts.values, color=func_counts.index,
                          color_discrete_map={"Functional":"#4CAF50","Non-Functional":"#F44336"})
             fig.update_traces(textinfo='percent+label')
@@ -453,6 +459,10 @@ if role == "Assistant Executive Engineer":
             total_updates = int(today_updates["jalmitra"].nunique())
             total_functional = int(len(st.session_state["schemes"][st.session_state["schemes"]["functionality"] == "Functional"]))
             df_upd = pd.DataFrame({"status":["Updated today (unique jalmitras)","Other (approx)"], "count":[total_updates, max(total_functional - total_updates, 0)]})
+
+            # Single-line summary above SO update pie
+            st.markdown(f"<small>Present: <b>{total_updates}</b> • Other (approx): <b>{max(total_functional - total_updates, 0)}</b></small>", unsafe_allow_html=True)
+
             fig2 = px.pie(df_upd, names="status", values="count", color="status",
                           color_discrete_map={"Updated today (unique jalmitras)":"#4CAF50","Other (approx)":"#F44336"})
             fig2.update_traces(textinfo='percent+label')
@@ -647,9 +657,6 @@ if role == "Assistant Executive Engineer":
         st.subheader("Section Officer performance (aggregated from Jalmitra scores)")
         # (Note: rest of code for SO page and other features follows unchanged)
 
-        # compute aggregated SO metrics (same logic as previous) - already defined above (kept for context)
-        # ... (the rest of the original logic continues as previously in the file)
-
 # --------------------------- Section Officer dashboard renderer (preserve SO page) -----------
 def render_so_dashboard(so_to_render: str):
     so = so_to_render
@@ -746,11 +753,17 @@ def render_so_dashboard(so_to_render: str):
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("#### Scheme Functionality")
+            # Small single-line summary above functionality pie (only once)
+            f_present = int(func_counts.get("Functional", 0))
+            f_non = int(func_counts.get("Non-Functional", 0))
+            st.markdown(f"<small>Functional: <b>{f_present}</b> • Non-Functional: <b>{f_non}</b></small>", unsafe_allow_html=True)
+
             fig1 = px.pie(names=func_counts.index, values=func_counts.values, color=func_counts.index,
                           color_discrete_map={"Functional":"#4CAF50","Non-Functional":"#F44336"})
             fig1.update_traces(textinfo='percent+label')
             st.plotly_chart(fig1, use_container_width=True, height=220)
         with c2:
+            # small-line text above jalmitra pie (only once)
             st.markdown(f"<small>Present: <b>{present_count}</b> &nbsp;&nbsp; Absent: <b>{absent_count}</b></small>", unsafe_allow_html=True)
 
             st.markdown("#### Jalmitra Updates (Today)")
@@ -760,15 +773,21 @@ def render_so_dashboard(so_to_render: str):
             fig2 = px.pie(df_part, names='status', values='count', color='status',
                           color_discrete_map={"Present":"#4CAF50","Absent":"#F44336"})
             fig2.update_traces(textinfo='percent+label+value')
-            fig2.update_layout(title=f"Present: {present_count} • Absent: {absent_count}", margin=dict(t=30,b=10))
+            fig2.update_layout(margin=dict(t=30,b=10))
             st.plotly_chart(fig2, use_container_width=True, height=260)
     else:
         st.markdown("#### Scheme Functionality")
+        # Small single-line summary above functionality pie (only once)
+        f_present = int(func_counts.get("Functional", 0))
+        f_non = int(func_counts.get("Non-Functional", 0))
+        st.markdown(f"<small>Functional: <b>{f_present}</b> • Non-Functional: <b>{f_non}</b></small>", unsafe_allow_html=True)
+
         fig1 = px.pie(names=func_counts.index, values=func_counts.values, color=func_counts.index,
                       color_discrete_map={"Functional":"#4CAF50","Non-Functional":"#F44336"})
         fig1.update_traces(textinfo='percent+label')
         st.plotly_chart(fig1, use_container_width=True, height=220)
 
+        # small-line text above jalmitra pie (only once)
         st.markdown(f"<small>Present: <b>{present_count}</b> &nbsp;&nbsp; Absent: <b>{absent_count}</b></small>", unsafe_allow_html=True)
 
         st.markdown("#### Jalmitra Updates (Today)")
@@ -778,7 +797,7 @@ def render_so_dashboard(so_to_render: str):
         fig2 = px.pie(df_part, names='status', values='count', color='status',
                       color_discrete_map={"Present":"#4CAF50","Absent":"#F44336"})
         fig2.update_traces(textinfo='percent+label+value')
-        fig2.update_layout(title=f"Present: {present_count} • Absent: {absent_count}", margin=dict(t=30,b=10))
+        fig2.update_layout(margin=dict(t=30,b=10))
         st.plotly_chart(fig2, use_container_width=True, height=240)
 
     st.markdown("---")
@@ -796,9 +815,12 @@ def render_so_dashboard(so_to_render: str):
         display_bfm = bfm_df[["jalmitra", "scheme_name", "reading", "reading_time", "water_quantity"]].copy()
         display_bfm.insert(0, "S.No", range(1, len(display_bfm)+1))
         display_bfm = display_bfm.rename(columns={"reading":"BFM Reading", "reading_time":"Reading Time", "water_quantity":"Water Quantity (m³)", "jalmitra":"Jalmitra", "scheme_name":"Scheme Name"})
-        # show styled dataframe (Streamlit will render pandas styler)
+        # highlight first row with light green background and format numeric column
         try:
-            st.dataframe(display_bfm.style.format({"Water Quantity (m³)":"{:.2f}"}), height=300, use_container_width=True)
+            def _highlight_first(row):
+                return ['background-color: #e6ffed' if row.name == 0 else '' for _ in row]
+            sty = display_bfm.style.format({"Water Quantity (m³)":"{:.2f}"}).apply(_highlight_first, axis=1)
+            st.dataframe(sty, height=300, use_container_width=True)
         except Exception:
             st.table(display_bfm)
     else:

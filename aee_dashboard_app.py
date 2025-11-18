@@ -13,10 +13,10 @@ import plotly.express as px
 # --------------------------- Page setup ---------------------------
 st.set_page_config(page_title="JJM Dashboard — Unified (Fixed)", layout="wide")
 try:
-    st.image("logo.jpg", width=160)
+    st.image("logo.jpg", width=170)
 except Exception:
     pass
-st.title("Jal Jeevan Mission — Unified Dashboard")
+st.title("Jal Jeevan Mission — Demo Dashboard")
 st.markdown("---")
 
 # --------------------------- Helpers & session init ---------------------------
@@ -1023,3 +1023,4 @@ readings_df = st.session_state.get("readings", pd.DataFrame())
 st.download_button("Schemes CSV", schemes_df.to_csv(index=False).encode("utf-8"), "schemes.csv")
 st.download_button("Readings CSV", readings_df.to_csv(index=False).encode("utf-8"), "readings.csv")
 st.success(f"Dashboard ready. Demo data generated: {st.session_state.get('demo_generated', False)}")
+
